@@ -80,6 +80,9 @@ cargo build --manifest-path host\Cargo.toml --release
 # → host\target\release\raptorqr-host.exe
 ```
 
+不想自己编译:**[Releases](https://github.com/tuean/RaptorQR/releases/latest) 里的
+`RaptorQR-Receiver-windows-x64.zip` 就是同一个 exe**(附带中文 `使用说明.txt`)。
+
 或直接用仓库里的 GitHub Actions 工作流 **Windows receiver**:在 `windows-latest`
 上跑 `cargo test` 并产出 `.exe`(Actions → 对应 run → Artifacts)。
 

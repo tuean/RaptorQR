@@ -34,5 +34,6 @@ cargo build --manifest-path host/Cargo.toml --release   # → raptorqr-host.exe�
 ## 链接
 
 - 原项目：https://github.com/infrost/RaptorQR
-- 本 fork：https://github.com/tuean/RaptorQR （预编译产物在 [Releases](https://github.com/tuean/RaptorQR/releases/latest)）
+- 本 fork：https://github.com/tuean/RaptorQR
+- 预编译产物：[Releases](https://github.com/tuean/RaptorQR/releases/latest) —— 发送端单文件 HTML、macOS 接收端 `.app`、**Windows 接收端 `raptorqr-host.exe`**
 - 许可证：MIT（© Haixiang，见 [LICENSE](LICENSE)）
