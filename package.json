@@ -17,7 +17,11 @@
     "benchmark:final": "vitest run benchmark.final.test.ts --environment happy-dom",
     "benchmark:soak": "vitest run benchmark.soak.test.ts --environment happy-dom",
     "test:watch": "pnpm --filter @raptorqr/web test:watch",
-    "verify:raptorq-wasm": "pnpm --filter @raptorqr/raptorq-wasm verify:raptorq"
+    "verify:raptorq-wasm": "pnpm --filter @raptorqr/raptorq-wasm verify:raptorq",
+    "guest:build": "pnpm --filter @raptorqr/web build:single",
+    "host:run": "cargo run --manifest-path host/Cargo.toml",
+    "host:test": "cargo test --manifest-path host/Cargo.toml",
+    "release": "./scripts/package_release.sh"
   },
   "keywords": [
     "qr",

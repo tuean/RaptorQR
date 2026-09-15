@@ -11,6 +11,13 @@ import qrRenderWorkerUrl from '@/workers/qr_render.worker.ts?worker&url';
 
 export const APP_CACHE_NAME = 'raptorqr-v1';
 
+/**
+ * The single-file guest build inlines every runtime asset into the HTML and
+ * ships no `sw.js`/manifest alongside it, so runtime preloading and service
+ * worker registration are skipped there.
+ */
+const IS_SINGLE_FILE_BUILD = import.meta.env.MODE === 'singlefile';
+
 export interface PreloadProgress {
   completed: number;
   total: number;
@@ -37,6 +44,7 @@ const WORKER_ASSETS: RuntimeAsset[] = [
 ];
 
 export async function registerServiceWorker(): Promise<void> {
+  if (IS_SINGLE_FILE_BUILD) return;
   if (!('serviceWorker' in navigator) || !import.meta.env.PROD) return;
 
   const registration = await navigator.serviceWorker.register('./sw.js', { scope: './' });
@@ -46,6 +54,11 @@ export async function registerServiceWorker(): Promise<void> {
 export async function preloadRuntimeAssets(
   onProgress: (progress: PreloadProgress) => void,
 ): Promise<void> {
+  if (IS_SINGLE_FILE_BUILD) {
+    onProgress({ completed: 1, total: 1, currentLabel: 'inlined assets' });
+    return;
+  }
+
   const assets = collectRuntimeAssets();
   let completed = 0;
 

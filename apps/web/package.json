@@ -12,13 +12,15 @@
     "preact": "10.29.4"
   },
   "devDependencies": {
-    "@preact/preset-vite": "2"
+    "@preact/preset-vite": "2",
+    "vite-plugin-singlefile": "^2.3.3"
   },
   "scripts": {
     "dev": "vite",
     "build": "tsc -p tsconfig.json --noEmit && vite build",
     "preview": "vite preview",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "build:single": "tsc -p tsconfig.json --noEmit && vite build --mode singlefile --config vite.config.single.ts"
   }
 }
