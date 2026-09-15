@@ -3,11 +3,11 @@
 [![Live Demo](https://img.shields.io/badge/Live-Demo-2ea44f)](https://qr.linkto.host/)
 # RaptorQR
 
-**The world's fastest** files and texts transfer between devices by displaying high-throughput animated QR codes and reading them with a camera.
+**The world's fastest** file and text transfer between devices, using animated high-throughput QR codes and a camera.
 
-Everything runs locally in the browser or terminal: no upload server, no Bluetooth, no cable.
+Everything runs locally: no upload server, no Bluetooth, no cable.
 
-RaptorQR started from an earlier open-source QR streaming prototype and has since become a substantial rewrite of the core transfer pipeline and user experience: FEC, QR rendering, worker scheduling, scanner integration, sender/receiver UI, CLI packaging, and the repo layout have all been rebuilt around a higher-throughput, production-ready architecture.
+RaptorQR grew out of an earlier QR-streaming prototype and is now a full rewrite of the transfer pipeline — FEC, QR rendering, worker scheduling, scanning, sender/receiver UI, CLI packaging and repo layout.
 
 <img width="221" height="480" alt="raptorQR" src="https://github.com/user-attachments/assets/e4a5f6f5-5fe8-4953-931a-a86a509b52e5" />
 
@@ -21,20 +21,18 @@ Live demo: https://qr.linkto.host/
 * [Packages](#packages)
 * [Features](#features)
 * [FAQ](#faq)
+* [Download](#download)
 * [Development](#development)
 * [CLI](#cli)
 * [WASM Artifacts](#wasm-artifacts)
 * [Implementation Notes](#implementation-notes)
 * [Links & Acknowledgements](#links--acknowledgements)
 
-
 ## Performance
 
-RaptorQR uses the Rust [`cberner/raptorq`](https://github.com/cberner/raptorq) implementation of RaptorQ (RFC 6330), compiled to WASM, as its primary fountain-code codec. This project also compiles [`erwanvivien/fast_qr`](https://github.com/erwanvivien/fast_qr) to WASM for high-speed QR rendering, with a more feature-complete wrapper than the upstream WASM package, and uses ZXing WASM for scanning.
+RaptorQR uses the Rust [`cberner/raptorq`](https://github.com/cberner/raptorq) implementation of RaptorQ (RFC 6330), compiled to WASM, as its primary fountain-code codec, [`erwanvivien/fast_qr`](https://github.com/erwanvivien/fast_qr) compiled to WASM for QR rendering, and ZXing WASM for scanning.
 
-The result is a massive performance improvement over the original JavaScript-only transfer path. In measured tests, the new pipeline reaches at least **50x+ higher throughput** in practical transfer scenarios.
-
-Measured examples:
+That is at least **50x+ higher throughput** than the original JavaScript-only path.
 
 | Scenario                                  |                         Result |
 | ----------------------------------------- | -----------------------------: |
@@ -45,9 +43,7 @@ Measured examples:
 
 <img width="295" height="203" alt="clipboard_2026-07-08_17-21" src="https://github.com/user-attachments/assets/a5d5fced-8042-447a-ba58-00c42ee107f6" />
 
-The 95.2 KB and 6.5 MB file tests were measured on **iPhone 16 / Safari as QR scanner** as 'lab results'. Actual speed depends on device camera quality, browser performance, lighting, QR size, QR version, playback rate, and scan settings.
-
-The current RaptorQ WASM path is intended to be production-ready for local offline transfer workflows.
+File tests were measured with **iPhone 16 / Safari as scanner**; real speed depends on camera, browser, lighting, QR size/version, playback rate and scan settings.
 
 ## Packages
 
@@ -58,146 +54,79 @@ The current RaptorQ WASM path is intended to be production-ready for local offli
 | `@raptorqr/fast-qr-wasm` | [![npm](https://img.shields.io/npm/v/@raptorqr/fast-qr-wasm)](https://www.npmjs.com/package/@raptorqr/fast-qr-wasm) | `pnpm add @raptorqr/fast-qr-wasm` | [Render QR codes as RGBA or matrices](packages/raptorqr-fast-qr-wasm/README.md#render-rgba) |
 | `@raptorqr/raptorq-wasm` | [![npm](https://img.shields.io/npm/v/@raptorqr/raptorq-wasm)](https://www.npmjs.com/package/@raptorqr/raptorq-wasm) | `pnpm add @raptorqr/raptorq-wasm` | [Low-level RaptorQ encode and decode](packages/raptorqr-raptorq-wasm/README.md#encode-and-decode) |
 
-Most applications should install `@raptorqr/core`; it already uses the two
-WASM packages internally. Install the WASM packages directly only for
-low-level codec or renderer integration. The non-published Preact/Vite web app
-lives in `apps/web`.
+Most applications only need `@raptorqr/core`, which already uses both WASM packages. The unpublished Preact/Vite web app lives in `apps/web`.
 
 ## Features
 
-* Browser sender/receiver for text and file transfer
-* Improved sender/receiver UI for live playback, scanning, tuning, and transfer status
+* Browser sender/receiver for text and files
 * Terminal sender via the `raptorqr` CLI
-* Primary RaptorQ WASM fountain codec
-* JS RLNC compatible codec (Deprecated)
-* fast_qr WASM QR rendering, (ZXing WASM QR writer as optional)
-* ZXing WASM QR scanning with configurable decoder settings
-* Parallel QR playback, live Canvas rendering, and optional GIF export
-* Adjustable QR version, ECC level, playback FPS, scan FPS, and repair overhead
+* RaptorQ WASM fountain codec (default); JS RLNC codec kept for compatibility, deprecated
+* fast_qr WASM rendering (optional ZXing WASM writer) and ZXing WASM scanning
+* Parallel QR playback, live canvas rendering, optional GIF export
+* Adjustable QR version, ECC level, playback FPS, scan FPS and repair overhead
 
 ## FAQ
 
 ### Can I use RaptorQR offline?
 
-Yes. The web app includes `sw.js` and is already PWA-ready. After the first load, you can open the same link again even without an internet connection.
+Yes. The web app ships `sw.js` and is PWA-ready: after the first load you can reopen the same link without internet access.
 
 ### Does RaptorQR upload my files anywhere?
 
-No. Transfers run locally in the browser or terminal. Files and text are encoded into animated QR codes on the sender side and decoded from the camera feed on the receiver side.
-
+No. Files and text are encoded into QR codes on the sender and decoded from the camera feed on the receiver — everything stays local.
 
 ## Download
 
-Prebuilt artifacts are attached to the [latest release](https://github.com/tuean/RaptorQR/releases/latest):
+Prebuilt artifacts are attached to the [latest release](https://github.com/tuean/RaptorQR/releases/latest), or reproducible locally with `pnpm release` (→ `release/`):
 
 | File | For | Notes |
 | --- | --- | --- |
-| `RaptorQR-Sender.html` | the sender side (VM / other machine) | ~5 MB self-contained page; works offline from `file://` |
-| `RaptorQR-Receiver-macos.zip` | the receiver side (host Mac) | universal binary (Apple Silicon + Intel), macOS 13+; unsigned, so first launch needs right-click → Open |
+| `RaptorQR-Sender.html` | the sender side (VM / other machine) | ~5 MB self-contained page, works offline from `file://` |
+| `RaptorQR-Receiver-macos.zip` / `RaptorQR Receiver.app` | the receiver side (host Mac) | universal binary (Apple Silicon + Intel), macOS 13+; unsigned, so first launch needs right-click → Open |
+| `使用说明.txt` | both | quick start + troubleshooting (Chinese) |
 
-Both are also reproducible locally with `pnpm release`.
-
-## Screen-Capture Receiver (Rust + gpui)
+### Screen-capture receiver (Rust + gpui)
 
 `host/` contains a desktop receiver that replaces the camera with **screen capture**:
-it reads the animated QR stream from a region of your screen and reconstructs the
-files. This is for the "isolated VM ↔ host on one desktop" case, where no network
-or shared clipboard exists.
+it reads the animated QR stream off a region of your screen. This is for the
+"isolated VM ↔ host on one desktop" case, where there is no network and no shared clipboard.
 
-* Guest (inside the VM): build the sender as one self-contained HTML file and open it.
+* Guest (in the VM): build the sender as one self-contained HTML file and open it.
 
   ```bash
-  pnpm guest:build      # → apps/web/dist-single/index.html (~5.4 MB, single file)
+  pnpm guest:build      # → apps/web/dist-single/index.html
   ```
 
-  Pick a file, press **Start Live QR**, and the QR stream plays on screen.
+  Pick a file, press **Start Live QR**, and the stream plays on screen.
 
-* Host: run the receiver and watch the progress. Multiple displays are scanned
-  automatically; use **◀ Display ▶** to preview another screen and drag a
-  rectangle there to narrow the scan.
+* Host: run the receiver. All displays are scanned automatically; use **◀ Display ▶** to preview another screen and drag a rectangle to narrow the scan.
 
   ```bash
   pnpm host:run         # cargo run --manifest-path host/Cargo.toml
   ```
 
-  Received files land in `~/Downloads`. macOS will ask for **Screen Recording**
-  permission on first launch.
+  Files land in `~/Downloads`; macOS asks for **Screen Recording** permission on first launch.
 
-### Build both deliverables
-
-```bash
-pnpm release          # → release/  (single-file HTML + macOS .app)
-```
-
-| Artifact | For | Notes |
-| --- | --- | --- |
-| `release/RaptorQR-Sender.html` | the VM | 5.2 MB self-contained page, works offline and from `file://` |
-| `release/RaptorQR Receiver.app` | the host | double-click; asks for Screen Recording on first run |
-| `release/使用说明.txt` | both | quick start + troubleshooting (Chinese) |
-
-See [host/README.md](host/README.md) for the protocol mapping, tests (including a
-headless-browser end-to-end test), and known limitations.
+See [host/README.md](host/README.md) for the protocol mapping, tests (including a headless-browser end-to-end test) and known limitations.
 
 ## Development
 
-Install dependencies:
-
 ```bash
 pnpm install
-```
-
-Run the web app in development:
-
-```bash
-pnpm dev:web
-```
-
-Then open the Vite URL printed in the terminal, usually:
-
-```text
-http://localhost:5173
-```
-
-If you need camera access from another device on the same LAN, serve it over an allowed HTTPS/dev host as required by your browser's camera security policy.
-
-Build everything:
-
-```bash
-pnpm build
-```
-
-### Deploy Web App On Vercel
-
-This repo includes a root `vercel.json`, so Vercel can deploy the web app from the monorepo without changing the project root in the dashboard.
-
-Vercel will run:
-
-```bash
-pnpm --filter @raptorqr/web build
-```
-
-and serve:
-
-```text
-apps/web/dist
-```
-
-Run tests:
-
-```bash
+pnpm dev:web      # then open the printed Vite URL
+pnpm build        # build all packages and the web app
 pnpm test
 ```
 
-Run the CLI locally. This builds the Node bundle, then starts it:
+Camera access from another device on the LAN requires serving over HTTPS or an allowed dev host, per browser camera policy.
+
+Deployment: the root `vercel.json` lets Vercel build the web app from the monorepo (`pnpm --filter @raptorqr/web build` → `apps/web/dist`) without changing the project root.
+
+Run the CLI from source:
 
 ```bash
 pnpm --filter @raptorqr/cli cli
-```
-
-Smoke-test the built CLI:
-
-```bash
-node packages/raptorqr-cli/dist/raptorqr.js --help
+node packages/raptorqr-cli/dist/raptorqr.js --help   # smoke-test the bundle
 ```
 
 ## CLI
@@ -208,71 +137,52 @@ echo "Hello, world!" | raptorqr
 raptorqr --serve --port 8080
 ```
 
-`raptorqr document.pdf` reads the local file, preserves the filename and MIME
-metadata, and displays a looping RaptorQ QR stream in the terminal. It does not
-upload the file, create a URL, or write a new output file; scan the QR stream
-with the RaptorQR receiver to reconstruct `document.pdf` on the receiving
-device.
+`raptorqr document.pdf` reads the local file, keeps the filename and MIME metadata, and displays a looping RaptorQ QR stream in the terminal — nothing is uploaded, no URL is created, no output file is written. Scan it with the RaptorQR receiver to reconstruct the file.
 
-`echo "Hello, world!" | raptorqr` reads text from stdin and displays it as the
-same looping terminal QR stream.
+`echo "Hello, world!" | raptorqr` does the same for text from stdin.
 
-`raptorqr --serve --port 8080` starts a local static server for the built web
-app. Run `pnpm build` first, then open `http://localhost:8080`.
+`raptorqr --serve --port 8080` serves the built web app (run `pnpm build` first, then open `http://localhost:8080`).
 
-Press `q` or `Ctrl-C` to stop the terminal QR sender.
+Press `q` or `Ctrl-C` to stop the terminal sender.
 
-The CLI bundle is built at:
-
-```text
-packages/raptorqr-cli/dist/raptorqr.js
-```
-
-The CLI copies its required WASM sidecars into the same `dist/` directory.
+The bundle is built at `packages/raptorqr-cli/dist/raptorqr.js`, with its WASM sidecars copied alongside.
 
 ## WASM Artifacts
 
-The generated artifacts live under:
+Generated artifacts live under:
 
 ```text
 packages/raptorqr-fast-qr-wasm/src/wasm
 packages/raptorqr-raptorq-wasm/src/wasm
 ```
 
-The build scripts are:
+Build scripts (paste into a Colab notebook; they download and compile the upstream Rust crates to WASM):
 
 ```text
 packages/raptorqr-fast-qr-wasm/src/build_fast_qr_wasm_colab.py
 packages/raptorqr-raptorq-wasm/src/build_raptorq_wasm_colab.py
 ```
 
-You can paste the scripts into a Colab notebook to build the WASM artifacts. The scripts will download and build the upstream Rust dependencies, then compile them to WASM.
-
 ## Implementation Notes
 
-The protocol keeps the existing fixed 8-byte transport header. RaptorQ packets use the reserved symbol index sentinel, while JS RLNC packets use the legacy symbol index range.
+The protocol keeps the existing fixed 8-byte transport header: RaptorQ packets use the reserved symbol-index sentinel, JS RLNC packets the legacy symbol-index range.
 
-`wasm-raptorq` is the default FEC codec. `js-rlnc` is still exported and test-covered, but it is deprecated and is never used as an automatic fallback.
+`wasm-raptorq` is the default FEC codec; `js-rlnc` is still exported and test-covered but deprecated, and never used as an automatic fallback.
 
-For a deeper protocol and package overview, see [ARCHITECTURE.md](ARCHITECTURE.md).
+Deeper protocol and package overview: [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Links & Acknowledgements
 
-RaptorQR stands on the shoulders of excellent open-source projects and developer communities.
-
 ### Open-source projects used
 
-* [hermitm0nk/qr-stream](https://github.com/hermitm0nk/qr-stream) — The Project orginally being inspired
-* [cberner/raptorq](https://github.com/cberner/raptorq) — RaptorQ / RFC 6330 fountain-code implementation used by the WASM FEC codec.
-* [erwanvivien/fast_qr](https://github.com/erwanvivien/fast_qr) — high-speed QR code rendering library compiled to WASM.
-* [Sec-ant/zxing-wasm](https://github.com/Sec-ant/zxing-wasm) — ZXing-C++ WebAssembly build used for QR/barcode scanning.
-* [ZXing-C++](https://github.com/zxing-cpp/zxing-cpp) — C++ port of ZXing, the underlying barcode image processing library.
-* [ZXing](https://github.com/zxing/zxing) — the original open-source multi-format barcode scanning project.
-* [Preact](https://preactjs.com/) — lightweight UI framework used by the web app.
-* [Vite](https://vite.dev/) — frontend build tool and development server.
-* [pnpm](https://pnpm.io/) — package manager used for the monorepo workspace.
+* [hermitm0nk/qr-stream](https://github.com/hermitm0nk/qr-stream) — the original inspiration
+* [cberner/raptorq](https://github.com/cberner/raptorq) — RaptorQ / RFC 6330 fountain-code implementation behind the WASM FEC codec
+* [erwanvivien/fast_qr](https://github.com/erwanvivien/fast_qr) — high-speed QR rendering library compiled to WASM
+* [Sec-ant/zxing-wasm](https://github.com/Sec-ant/zxing-wasm) — ZXing-C++ WebAssembly build used for scanning
+* [ZXing-C++](https://github.com/zxing-cpp/zxing-cpp) / [ZXing](https://github.com/zxing/zxing) — the underlying barcode processing libraries
+* [Preact](https://preactjs.com/), [Vite](https://vite.dev/), [pnpm](https://pnpm.io/) — UI framework, build tool and package manager
 
-### Community (Where this project is being discussed)
+### Community
 
 * [LINUX DO](https://linux.do/t/topic/2549646)
 * [Appinn](https://meta.appinn.net/t/topic/87996/6)
