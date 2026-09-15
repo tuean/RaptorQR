@@ -86,6 +86,47 @@ Yes. The web app includes `sw.js` and is already PWA-ready. After the first load
 No. Transfers run locally in the browser or terminal. Files and text are encoded into animated QR codes on the sender side and decoded from the camera feed on the receiver side.
 
 
+## Screen-Capture Receiver (Rust + gpui)
+
+`host/` contains a desktop receiver that replaces the camera with **screen capture**:
+it reads the animated QR stream from a region of your screen and reconstructs the
+files. This is for the "isolated VM ↔ host on one desktop" case, where no network
+or shared clipboard exists.
+
+* Guest (inside the VM): build the sender as one self-contained HTML file and open it.
+
+  ```bash
+  pnpm guest:build      # → apps/web/dist-single/index.html (~5.4 MB, single file)
+  ```
+
+  Pick a file, press **Start Live QR**, and the QR stream plays on screen.
+
+* Host: run the receiver and watch the progress. Multiple displays are scanned
+  automatically; use **◀ Display ▶** to preview another screen and drag a
+  rectangle there to narrow the scan.
+
+  ```bash
+  pnpm host:run         # cargo run --manifest-path host/Cargo.toml
+  ```
+
+  Received files land in `~/Downloads`. macOS will ask for **Screen Recording**
+  permission on first launch.
+
+### Build both deliverables
+
+```bash
+pnpm release          # → release/  (single-file HTML + macOS .app)
+```
+
+| Artifact | For | Notes |
+| --- | --- | --- |
+| `release/RaptorQR-Sender.html` | the VM | 5.2 MB self-contained page, works offline and from `file://` |
+| `release/RaptorQR Receiver.app` | the host | double-click; asks for Screen Recording on first run |
+| `release/使用说明.txt` | both | quick start + troubleshooting (Chinese) |
+
+See [host/README.md](host/README.md) for the protocol mapping, tests (including a
+headless-browser end-to-end test), and known limitations.
+
 ## Development
 
 Install dependencies:
