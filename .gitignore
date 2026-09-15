@@ -32,3 +32,10 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 
 # Finder (MacOS) folder config
 .DS_Store
+
+# Rust host receiver
+host/target
+# generated test fixtures (node host/scripts/encode_fixture.mjs)
+host/tests/fixtures/
+apps/web/dist-single
+release/

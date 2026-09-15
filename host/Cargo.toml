@@ -1,0 +1,16 @@
+[package]
+name = "raptorqr-host"
+version = "0.1.0"
+edition = "2021"
+description = "RaptorQR host receiver: screen-capture QR reader + RaptorQ FEC decoder with a gpui UI"
+license = "MIT"
+
+[dependencies]
+gpui = { version = "0.2.2", features = ["runtime_shaders"] }
+xcap = "0.9"
+rxing = "0.9"
+raptorq = "2.0"
+flate2 = "1.1"
+image = "0.25"
+
+[dev-dependencies]
