@@ -86,6 +86,17 @@ Yes. The web app includes `sw.js` and is already PWA-ready. After the first load
 No. Transfers run locally in the browser or terminal. Files and text are encoded into animated QR codes on the sender side and decoded from the camera feed on the receiver side.
 
 
+## Download
+
+Prebuilt artifacts are attached to the [latest release](https://github.com/tuean/RaptorQR/releases/latest):
+
+| File | For | Notes |
+| --- | --- | --- |
+| `RaptorQR-Sender.html` | the sender side (VM / other machine) | ~5 MB self-contained page; works offline from `file://` |
+| `RaptorQR-Receiver-macos.zip` | the receiver side (host Mac) | universal binary (Apple Silicon + Intel), macOS 13+; unsigned, so first launch needs right-click → Open |
+
+Both are also reproducible locally with `pnpm release`.
+
 ## Screen-Capture Receiver (Rust + gpui)
 
 `host/` contains a desktop receiver that replaces the camera with **screen capture**:

@@ -14,15 +14,27 @@ APP_NAME="RaptorQR Receiver"
 BUNDLE_ID="com.raptorqr.receiver"
 VERSION="0.1.0"
 
-echo "==> building release binary"
-cargo build --release
+echo "==> building release binaries"
+cargo build --release --target aarch64-apple-darwin
 
 echo "==> assembling $OUT_DIR/$APP_NAME.app"
 APP="$OUT_DIR/$APP_NAME.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
-cp target/release/raptorqr-host "$APP/Contents/MacOS/raptorqr-host"
+# Ship a universal binary so Intel Macs can run it too; fall back to the host
+# architecture when the x86_64 target is not installed.
+ARM_BIN="target/aarch64-apple-darwin/release/raptorqr-host"
+X86_BIN="target/x86_64-apple-darwin/release/raptorqr-host"
+if rustup target list --installed 2>/dev/null | grep -q x86_64-apple-darwin; then
+  cargo build --release --target x86_64-apple-darwin
+  lipo -create -output "$APP/Contents/MacOS/raptorqr-host" "$ARM_BIN" "$X86_BIN"
+  echo "    universal: $(lipo -archs "$APP/Contents/MacOS/raptorqr-host")"
+else
+  echo "    warning: x86_64-apple-darwin target missing - aarch64-only bundle"
+  echo "    (run: rustup target add x86_64-apple-darwin)"
+  cp "$ARM_BIN" "$APP/Contents/MacOS/raptorqr-host"
+fi
 
 if [ -f assets/RaptorQR.icns ]; then
   cp assets/RaptorQR.icns "$APP/Contents/Resources/RaptorQR.icns"
@@ -83,5 +95,5 @@ echo "==> verifying"
 codesign --verify --strict --verbose=1 "$APP"
 echo
 echo "bundle:  $APP"
-echo "binary:  $APP/Contents/MacOS/raptorqr-host ($(du -h "$APP/Contents/MacOS/raptorqr-host" | cut -f1))"
+echo "binary:  $APP/Contents/MacOS/raptorqr-host ($(du -h "$APP/Contents/MacOS/raptorqr-host" | cut -f1), $(lipo -archs "$APP/Contents/MacOS/raptorqr-host" 2>/dev/null || echo native))"
 echo "launch:  open \"$APP\""
