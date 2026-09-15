@@ -1,0 +1,36 @@
+name: Windows receiver
+
+# Builds the Windows receiver (raptorqr-host.exe). The receiver is headless
+# there: gpui has no Windows backend, so `main` dispatches to src/console.rs.
+#
+# Fixtures under host/tests/fixtures are generated, not committed, so the
+# tests that need them skip on a fresh checkout; the rest run for real.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [master]
+    paths:
+      - 'host/**'
+      - '.github/workflows/windows-host.yml'
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Test
+        run: cargo test --manifest-path host/Cargo.toml --release
+
+      - name: Build release binary
+        run: cargo build --manifest-path host/Cargo.toml --release
+
+      - name: Upload exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: raptorqr-host-windows-x86_64
+          path: host/target/release/raptorqr-host.exe
+          if-no-files-found: error

@@ -6,6 +6,9 @@
 配合 `apps/web` 的发送端(或单文件 HTML 发送端)使用。典型场景:虚拟机
 (隔离内网)里的文件 → 屏幕动画 QR → 宿主机捕获还原。
 
+macOS/Linux 用 gpui 窗口; **Windows 走无界面版**(gpui 没有 Windows 后端),
+见下面的「Windows 无界面接收端」。
+
 ## 构建与运行
 
 ```bash
@@ -42,6 +45,43 @@ cargo run --release
 状态栏里的 `QR/s` 表示每秒解到的二维码数量:显示 `no QR visible` 就说明
 屏幕上那块区域没有可见的二维码(常见原因:发送端窗口被别的窗口挡住,
 macOS 会冻结被遮挡窗口的动画)。
+
+## Windows 无界面接收端
+
+`gpui` 没有 Windows 后端,所以 Windows 上编译出的就是一个**无界面接收端**
+(`src/console.rs`,与 macOS 窗口版共用同一套捕获/扫描/解码/保存链路)。
+没有窗口,参数即交互:
+
+```powershell
+raptorqr-host.exe                                  # 全屏扫描所有显示器 → %USERPROFILE%\Downloads
+raptorqr-host.exe --once                           # 收到第一个文件就退出(脚本/测试用)
+raptorqr-host.exe --display 2 --region 300,200,900,700   # 只扫第 2 块屏的这块区域
+raptorqr-host.exe --check                          # 体检:逐屏尺寸 / 亮度 / 解到几个二维码
+```
+
+| 参数 | 作用 |
+| --- | --- |
+| `--headless` | 强制无界面(macOS/Linux 上想看控制台输出时用;Windows 默认就是它) |
+| `--out DIR` | 输出目录,默认用户 `Downloads` |
+| `--display N` | 只扫第 N 块屏(1 起,编号同 `--check`) |
+| `--region x,y,w,h` | 只扫该屏的一块区域(物理像素,屏幕左上角为原点) |
+| `--once` | 收到第一个文件后退出 |
+
+- 每 `0.5 s` 刷新一行状态:进度 / 已解符号数 + 速率 / 传输包数。
+- 收到文件打印 `✓ 已接收 <文件> (<大小>) → <路径>`;发送端循环播放的同一个
+  流转只会写盘一次(不堆 `file (1)`)。
+- Windows 下**没有系统通知**,反馈只有控制台输出。
+- 设了 `--region` 时只扫那一块区域(其余显示器不扫),这是缩小扫描范围的正规做法。
+
+构建:
+
+```powershell
+cargo build --manifest-path host\Cargo.toml --release
+# → host\target\release\raptorqr-host.exe
+```
+
+或直接用仓库里的 GitHub Actions 工作流 **Windows receiver**:在 `windows-latest`
+上跑 `cargo test` 并产出 `.exe`(Actions → 对应 run → Artifacts)。
 
 ## 多显示器
 
@@ -130,6 +170,9 @@ cd host
 cargo test
 ```
 
+需要 fixture 的用例(下面两个文件)在缺 fixture 时会**跳过**而不是失败,所以
+新克隆的仓库直接 `cargo test` 也能跑(Win/mac 通用)。
+
 `tests/roundtrip.rs` 是跨语言集成测试:先用真实发送端 RaptorQ WASM 编码器
 生成传输包(`node scripts/encode_fixture.mjs`,需要先 `pnpm install`),
 Rust 端解码并逐字节比对。覆盖三个场景:
@@ -158,8 +201,15 @@ cargo test --test singlefile_e2e
   CommandLineTools(没有完整 Xcode)时会失败。因此 `Cargo.toml` 启用了 gpui 的
   `runtime_shaders` feature(shader 改为运行时编译),这样只装 CLT 也能 `cargo run`。
 - 首次运行需要在 系统设置 → 隐私与安全性 → 屏幕录制 里授权,否则捕获全黑。
+- gpui 只作为 **非 Windows** 依赖(`[target.'cfg(not(windows))'.dependencies]`);
+  Windows 构建不需要它,也不需要 Metal/图形栈。
+- 检查 Windows 目标能否编译(在 mac 上即可,无需链接器):
+  `cargo check --target x86_64-pc-windows-msvc`。
 
 ## 已知限制
 
 - 坐标按物理像素;Retina 屏下若发送端按逻辑像素渲染,区域会偏小,可在预览上重新框选。
 - `xcap` 走 macOS 旧版 `CGWindowListCreateImage` API;未来可换 ScreenCaptureKit。
+- Windows 端无 GUI:区域只能用 `--region` 指定,不能拖拽框选;也没有完成通知。
+- Windows 端尚未在真机上验证过屏幕捕获(`xcap` 在 Windows 走 WGC/DXGI),
+  请先用 `raptorqr-host.exe --check` 确认能抓到画面且亮度正常。

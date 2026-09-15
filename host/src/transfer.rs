@@ -248,6 +248,12 @@ pub fn save_to_downloads(filename: &str, body: &[u8]) -> (PathBuf, bool) {
     save_in(&downloads_dir(), filename, body)
 }
 
+/// [`save_to_downloads`] into an explicit directory — used by the headless
+/// receiver's `--out DIR`.
+pub fn save_to_dir(dir: &std::path::Path, filename: &str, body: &[u8]) -> (PathBuf, bool) {
+    save_in(dir, filename, body)
+}
+
 /// [`save_to_downloads`] against an explicit directory (testable).
 /// Returns the path and whether a new file was actually written.
 fn save_in(dir: &std::path::Path, filename: &str, body: &[u8]) -> (PathBuf, bool) {
@@ -262,7 +268,10 @@ fn save_in(dir: &std::path::Path, filename: &str, body: &[u8]) -> (PathBuf, bool
 }
 
 fn downloads_dir() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+    // macOS/Linux use $HOME; Windows only sets %USERPROFILE%.
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .unwrap_or_else(|_| ".".into());
     let candidate = PathBuf::from(&home).join("Downloads");
     if candidate.is_dir() {
         candidate

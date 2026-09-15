@@ -6,11 +6,15 @@ description = "RaptorQR host receiver: screen-capture QR reader + RaptorQ FEC de
 license = "MIT"
 
 [dependencies]
-gpui = { version = "0.2.2", features = ["runtime_shaders"] }
 xcap = "0.9"
 rxing = "0.9"
 raptorq = "2.0"
 flate2 = "1.1"
 image = "0.25"
+
+# gpui has no Windows backend, so the GUI (and its notifications) only build on
+# macOS/Linux. On Windows the receiver runs headless — see src/console.rs.
+[target.'cfg(not(windows))'.dependencies]
+gpui = { version = "0.2.2", features = ["runtime_shaders"] }
 
 [dev-dependencies]
