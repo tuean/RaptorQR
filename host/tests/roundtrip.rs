@@ -5,8 +5,8 @@
 use std::fs;
 
 use raptorqr_host::transfer::{
-    decode_packets, decode_packets_counting_repeats, CompletedTransfer, FeedResult,
-    TransferTracker,
+    decode_packets, decode_packets_counting_repeats, save_completed, CompletedTransfer, Delivery,
+    FeedResult, TransferTracker, TEXT_LABEL,
 };
 
 /// Fixtures come from `node scripts/encode_fixture.mjs` and are **not**
@@ -46,15 +46,55 @@ fn roundtrip(name: &str, expect_filename: &str) {
     let decoded: Option<CompletedTransfer> = decode_packets(&packets);
     let transfer = decoded.unwrap_or_else(|| panic!("{name}: decode never completed"));
     assert_eq!(transfer.body, expected, "{name}: decoded bytes mismatch");
-    if !transfer.is_text {
-        assert_eq!(transfer.filename, expect_filename, "{name}: filename mismatch");
-    }
-    println!("{name}: ok ({} bytes, {} packets)", expected.len(), packets.len());
+    assert_eq!(
+        transfer.filename, expect_filename,
+        "{name}: filename mismatch"
+    );
+    println!(
+        "{name}: ok ({} bytes, {} packets)",
+        expected.len(),
+        packets.len()
+    );
 }
 
 #[test]
 fn decode_text_fixture() {
-    roundtrip("text", "");
+    let Some((packets, expected)) = load_fixture("text") else {
+        eprintln!("skipping text: run `node scripts/encode_fixture.mjs` to generate fixtures");
+        return;
+    };
+    let transfer = decode_packets(&packets).expect("text: decode never completed");
+    assert_eq!(transfer.body, expected, "text: decoded bytes mismatch");
+    assert!(transfer.is_text, "text: fixture must be a text transfer");
+    // A text transfer carries no filename, and it is delivered as text: the
+    // decoded payload must never be used as a file name (a >255-byte payload
+    // used to fail with ENAMETOOLONG and panic the decode thread).
+    assert_eq!(
+        transfer.filename, TEXT_LABEL,
+        "text: the payload must not become the filename"
+    );
+    assert_eq!(transfer.delivery(), Delivery::Clipboard);
+    assert_eq!(
+        transfer.as_text().as_deref(),
+        Some(String::from_utf8_lossy(&expected).as_ref()),
+        "text: the payload must be available as text"
+    );
+
+    // The whole point: receiving text must not create a file anywhere.
+    let dir = std::env::temp_dir().join(format!("raptorqr-text-save-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    assert!(
+        save_completed(&transfer, Some(&dir)).is_none(),
+        "text: must not be written to disk"
+    );
+    let left: Vec<_> = fs::read_dir(&dir).unwrap().filter_map(|e| e.ok()).collect();
+    assert!(left.is_empty(), "text: {left:?} should not exist");
+    fs::remove_dir_all(&dir).unwrap();
+    println!(
+        "text: ok ({} bytes, delivered as clipboard text)",
+        expected.len()
+    );
 }
 
 #[test]

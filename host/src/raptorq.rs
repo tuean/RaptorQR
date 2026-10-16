@@ -153,7 +153,12 @@ pub fn unwrap_payload(
     };
 
     if is_text {
-        (String::from_utf8_lossy(&inflated).into_owned(), inflated)
+        // Text transfers have no filename preamble — the payload *is* the text.
+        // The name must stay empty (the caller falls back to `raptorqr-text.txt`):
+        // returning the text here makes the receiver write a file named after its
+        // own contents, which fails with ENAMETOOLONG once the text exceeds the
+        // 255-byte limit for one path component.
+        (String::new(), inflated)
     } else {
         let mut name = String::new();
         let mut rest = inflated.as_slice();
@@ -190,4 +195,43 @@ fn inflate_raw(data: &[u8]) -> Vec<u8> {
 pub struct SessionKey {
     pub data_length: u32,
     pub transport_payload_size: usize,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use flate2::write::DeflateEncoder;
+    use flate2::Compression;
+    use std::io::Write;
+
+    fn deflate_raw(data: &[u8]) -> Vec<u8> {
+        let mut encoder = DeflateEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(data).unwrap();
+        encoder.finish().unwrap()
+    }
+
+    /// A text payload has no filename preamble: the name must stay empty so the
+    /// receiver saves it as `raptorqr-text.txt` instead of writing a file named
+    /// after its own contents (illegal once the text passes 255 bytes).
+    #[test]
+    fn text_payload_has_no_filename() {
+        let text = "登录口令: hunter2\n".repeat(64);
+        let (name, body) = unwrap_payload(deflate_raw(text.as_bytes()), true, true);
+        assert_eq!(name, "", "the text body must not double as its filename");
+        assert_eq!(body, text.as_bytes());
+    }
+
+    /// File transfers still strip the `[nameLen][name][mimeLen][mime]` preamble.
+    #[test]
+    fn file_payload_keeps_name_and_drops_mime() {
+        let mut payload = vec![10u8];
+        payload.extend_from_slice(b"secret.bin");
+        payload.push(24);
+        payload.extend_from_slice(b"application/octet-stream");
+        payload.extend_from_slice(b"BODY");
+
+        let (name, body) = unwrap_payload(payload, false, false);
+        assert_eq!(name, "secret.bin");
+        assert_eq!(body, b"BODY");
+    }
 }

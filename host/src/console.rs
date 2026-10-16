@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use crate::capture::{self, ScreenRect};
 use crate::notify::human_bytes;
 use crate::qrscan::scan_qrs;
-use crate::transfer::{save_to_dir, save_to_downloads, FeedResult, TransferTracker};
+use crate::transfer::{save_completed, FeedResult, TransferTracker};
 
 /// Minimum gap between QR decodes of one display.
 const DECODE_INTERVAL: Duration = Duration::from_millis(100);
@@ -51,7 +51,7 @@ pub fn run() {
     };
     println!("RaptorQR receiver — headless");
     println!("scanning: {}", scan_scope(&args));
-    println!("saving to: {dest}");
+    println!("saving files to: {dest}  (text goes straight to the clipboard)");
     println!("press Ctrl-C to stop\n");
 
     let mut tracker = TransferTracker::new();
@@ -131,28 +131,48 @@ pub fn run() {
                     FeedResult::Progress => packets += 1,
                     FeedResult::Completed(transfer) => {
                         packets += 1;
-                        let (path, written) = match &args.out_dir {
-                            Some(dir) => save_to_dir(dir, &transfer.filename, &transfer.body),
-                            None => save_to_downloads(&transfer.filename, &transfer.body),
-                        };
-                        tracker.mark_saved(path.clone(), transfer.body.len());
-                        println!(
-                            "\n✓ 已接收 {} ({}) → {}{}",
-                            transfer.filename,
-                            human_bytes(transfer.body.len()),
-                            path.display(),
-                            if written {
-                                ""
-                            } else {
-                                "  [内容相同，未重复写入]"
+                        match save_completed(&transfer, args.out_dir.as_deref()) {
+                            Some((path, written)) => {
+                                tracker.mark_saved(path.clone(), transfer.body.len());
+                                println!(
+                                    "\n✓ 已接收 {} ({}) → {}{}",
+                                    transfer.filename,
+                                    human_bytes(transfer.body.len()),
+                                    path.display(),
+                                    if written {
+                                        ""
+                                    } else {
+                                        "  [内容相同，未重复写入]"
+                                    }
+                                );
+                                if written {
+                                    crate::notify::notify_transfer_received(
+                                        &transfer.filename,
+                                        &path.display().to_string(),
+                                        transfer.body.len(),
+                                    );
+                                }
                             }
-                        );
-                        if written {
-                            crate::notify::notify_transfer_received(
-                                &transfer.filename,
-                                &path.display().to_string(),
-                                transfer.body.len(),
-                            );
+                            // Text is never written to disk: it goes to the
+                            // clipboard, which is what "receiving text" means.
+                            None => {
+                                let text = transfer.as_text().unwrap_or_default();
+                                let copied = crate::clipboard::copy_text(&text);
+                                println!(
+                                    "\n✓ 已收到文本 ({} · {} 字符) — {}",
+                                    human_bytes(transfer.body.len()),
+                                    text.chars().count(),
+                                    if copied {
+                                        "已复制到剪贴板"
+                                    } else {
+                                        "复制失败：没有可用的剪贴板工具"
+                                    }
+                                );
+                                print_text_preview(&text);
+                                if copied {
+                                    crate::notify::notify_text_received(&text);
+                                }
+                            }
                         }
                         if args.once {
                             break 'receive;
@@ -184,6 +204,23 @@ pub fn run() {
 
         std::thread::sleep(IDLE_SLEEP);
     }
+}
+
+/// How much of a received text transfer goes to the console. The sender's text
+/// can be arbitrarily long, so the rest stays in the saved file.
+const TEXT_PREVIEW_CHARS: usize = 2000;
+
+/// Show a received text transfer inline — a console receiver has no window, and
+/// reading a short snippet beats opening a file.
+fn print_text_preview(text: &str) {
+    let mut chars = text.chars();
+    let preview: String = chars.by_ref().take(TEXT_PREVIEW_CHARS).collect();
+    println!("── 文本内容 ──");
+    println!("{preview}");
+    if chars.next().is_some() {
+        println!("…（只显示前 {TEXT_PREVIEW_CHARS} 个字符；剪贴板里是完整文本）");
+    }
+    println!("──────────────");
 }
 
 /// What the receiver is scanning, for the banner.

@@ -2,6 +2,7 @@
 //! transport protocol decoding (a Rust port of the TS core protocol).
 
 pub mod capture;
+pub mod clipboard;
 pub mod console;
 pub mod notify;
 pub mod protocol;

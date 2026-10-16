@@ -11,7 +11,7 @@ use gpui::*;
 
 use crate::capture::{self, ScreenRect};
 use crate::qrscan::scan_qrs;
-use crate::transfer::{save_to_downloads, TransferTracker};
+use crate::transfer::{save_completed, Delivery, TransferTracker};
 
 // ─── Shared state between the UI and the capture worker ─────────────────────
 
@@ -61,11 +61,16 @@ pub enum WorkerEvent {
         path: PathBuf,
         size: usize,
         written: bool,
+        /// Set for text transfers: the decoded text, which the UI thread puts on
+        /// the clipboard. Text is never written to disk.
+        text: Option<String>,
     },
     CaptureError(String),
 }
 
 const CAPTURE_FPS: u32 = 8;
+/// Lines of a received text shown in the card; the clipboard gets all of it.
+const TEXT_CARD_LINES: usize = 8;
 const PREVIEW_MAX_W: u32 = 1024;
 const PREVIEW_INTERVAL: Duration = Duration::from_millis(350);
 /// Minimum gap between QR decodes of one display.
@@ -202,33 +207,61 @@ pub fn run_worker(shared: Arc<SharedState>, tx: mpsc::Sender<WorkerEvent>) {
                         }
                         crate::transfer::FeedResult::Completed(t) => {
                             packets_decoded += 1;
-                            let (path, written) = save_to_downloads(&t.filename, &t.body);
-                            tracker.mark_saved(path.clone(), t.body.len());
-                            if debug {
-                                eprintln!(
-                                    "[recv] COMPLETE {} → {} ({} bytes, {})",
-                                    t.filename,
-                                    path.display(),
-                                    t.body.len(),
-                                    if written { "saved" } else { "identical file already there" }
-                                );
+                            match save_completed(&t, None) {
+                                Some((path, written)) => {
+                                    tracker.mark_saved(path.clone(), t.body.len());
+                                    if debug {
+                                        eprintln!(
+                                            "[recv] COMPLETE {} → {} ({} bytes, {})",
+                                            t.filename,
+                                            path.display(),
+                                            t.body.len(),
+                                            if written {
+                                                "saved"
+                                            } else {
+                                                "identical file already there"
+                                            }
+                                        );
+                                    }
+                                    // Announce every receipt — including one
+                                    // whose identical file is already on disk,
+                                    // otherwise the user sees nothing at all.
+                                    if written {
+                                        crate::notify::notify_transfer_received(
+                                            &t.filename,
+                                            &path.display().to_string(),
+                                            t.body.len(),
+                                        );
+                                    }
+                                    let _ = tx.send(WorkerEvent::Transfer {
+                                        filename: t.filename,
+                                        path,
+                                        size: t.body.len(),
+                                        written,
+                                        text: None,
+                                    });
+                                }
+                                // Text never touches the disk: the UI thread
+                                // puts it on the clipboard and shows it.
+                                None => {
+                                    let text = t.as_text().unwrap_or_default();
+                                    if debug {
+                                        eprintln!(
+                                            "[recv] COMPLETE text ({} bytes, {} chars)",
+                                            t.body.len(),
+                                            text.chars().count()
+                                        );
+                                    }
+                                    crate::notify::notify_text_received(&text);
+                                    let _ = tx.send(WorkerEvent::Transfer {
+                                        filename: t.filename,
+                                        path: PathBuf::new(),
+                                        size: t.body.len(),
+                                        written: true,
+                                        text: Some(text),
+                                    });
+                                }
                             }
-                            // Announce every receipt — including one whose
-                            // identical file is already on disk, otherwise the
-                            // user sees nothing at all.
-                            if written {
-                                crate::notify::notify_transfer_received(
-                                    &t.filename,
-                                    &path.display().to_string(),
-                                    t.body.len(),
-                                );
-                            }
-                            let _ = tx.send(WorkerEvent::Transfer {
-                                filename: t.filename,
-                                path,
-                                size: t.body.len(),
-                                written,
-                            });
                         }
                     }
                 }
@@ -249,16 +282,22 @@ pub fn run_worker(shared: Arc<SharedState>, tx: mpsc::Sender<WorkerEvent>) {
             let qr_per_second = (qr_symbols as f64 / elapsed_status * 10.0).round() / 10.0;
             let (progress, blocks, note) = match tracker.status() {
                 Some(status) => match status.complete {
-                    Some((filename, path, bytes)) => (
+                    Some((label, path, bytes, delivery)) => (
                         1.0,
                         status.blocks,
-                        format!(
-                            "已完成：{filename} ({} B) 已保存到 {} — 发送端仍在循环播放",
-                            crate::notify::human_bytes(bytes),
-                            path.parent()
-                                .map(|p| p.display().to_string())
-                                .unwrap_or_default()
-                        ),
+                        match delivery {
+                            // Text is pasted, not filed.
+                            Delivery::Clipboard => {
+                                format!("已完成：{label} 已复制到剪贴板 — 发送端仍在循环播放")
+                            }
+                            Delivery::File => format!(
+                                "已完成：{label} ({} B) 已保存到 {} — 发送端仍在循环播放",
+                                crate::notify::human_bytes(bytes),
+                                path.parent()
+                                    .map(|p| p.display().to_string())
+                                    .unwrap_or_default()
+                            ),
+                        },
                     ),
                     None => (
                         status.progress,
@@ -320,6 +359,10 @@ struct TransferItem {
     size: usize,
     /// false = identical file already existed, nothing new was written
     written: bool,
+    /// Decoded text of a text transfer (`None` for files).
+    text: Option<String>,
+    /// Whether the text reached the clipboard.
+    copied: bool,
 }
 
 pub struct ReceiverView {
@@ -378,7 +421,7 @@ impl ReceiverView {
                     .timer(Duration::from_millis(60))
                     .await;
                 let _ = this.update(cx, |this, cx| {
-                    this.drain_events();
+                    this.drain_events(cx);
                     cx.notify();
                 });
             }
@@ -413,7 +456,9 @@ impl ReceiverView {
         }
     }
 
-    fn drain_events(&mut self) {
+    /// Drain worker events. Runs on the UI thread because it is the only place
+    /// allowed to touch the clipboard.
+    fn drain_events(&mut self, cx: &mut Context<Self>) {
         let rx = self.events.lock().unwrap();
         for event in rx.try_iter() {
             match event {
@@ -472,12 +517,26 @@ impl ReceiverView {
                     path,
                     size,
                     written,
+                    text,
                 } => {
+                    // Text is delivered by pasting it, so it goes on the
+                    // clipboard the moment it arrives — the copy button on the
+                    // card re-copies it later.
+                    let copied = match &text {
+                        Some(text) if !text.is_empty() => {
+                            cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
+                            true
+                        }
+                        Some(_) => false,
+                        None => false,
+                    };
                     self.transfers.push(TransferItem {
                         filename,
                         path,
                         size,
                         written,
+                        text,
+                        copied,
                     });
                     if self.transfers.len() > 50 {
                         self.transfers.remove(0);
@@ -719,7 +778,7 @@ impl Render for ReceiverView {
             .child(if self.selecting {
                 self.render_region_picker(cx)
             } else {
-                self.render_body()
+                self.render_body(cx)
             })
             .child(self.render_footer())
     }
@@ -873,7 +932,7 @@ impl ReceiverView {
     }
 
     /// Default view: what is being received, and what already arrived.
-    fn render_body(&self) -> Div {
+    fn render_body(&self, cx: &mut Context<Self>) -> Div {
         let mut body = div()
             .flex()
             .flex_col()
@@ -882,7 +941,7 @@ impl ReceiverView {
             .p_4()
             .overflow_hidden();
 
-        body = body.child(self.render_progress_card());
+        body = body.child(self.render_progress_card(cx));
 
         // Received files — the actual useful content of this window.
         let mut list = div().flex().flex_col().gap_1();
@@ -891,10 +950,18 @@ impl ReceiverView {
                 div()
                     .text_size(px(13.))
                     .text_color(rgb(0x6a6a6e))
-                    .child("还没有收到文件。发送端开始播放二维码后，文件会自动出现在这里，并保存到 ~/Downloads。"),
+                    .child(
+                        "还没有收到内容。发送端开始播放二维码后，文件会保存到 ~/Downloads，\
+                         文本会直接进剪贴板并显示在这里。",
+                    ),
             );
         } else {
             for item in self.transfers.iter().rev().take(12) {
+                let detail = match &item.text {
+                    Some(_) if item.copied => "已复制到剪贴板".to_string(),
+                    Some(_) => "复制失败（点上方「复制」重试）".to_string(),
+                    None => item.path.display().to_string(),
+                };
                 list = list.child(
                     div()
                         .flex()
@@ -922,9 +989,9 @@ impl ReceiverView {
                                 .flex_grow()
                                 .text_size(px(11.))
                                 .text_color(rgb(0x6a6a6e))
-                                .child(item.path.display().to_string()),
+                                .child(detail),
                         )
-                        .when(!item.written, |row| {
+                        .when(!item.written && item.text.is_none(), |row| {
                             row.child(
                                 div()
                                     .text_size(px(11.))
@@ -951,7 +1018,7 @@ impl ReceiverView {
         )
     }
 
-    fn render_progress_card(&self) -> Div {
+    fn render_progress_card(&self, cx: &mut Context<Self>) -> Div {
         let card = div()
             .flex()
             .flex_col()
@@ -964,6 +1031,9 @@ impl ReceiverView {
 
         // Finished transfer: green confirmation instead of a progress bar.
         if let Some(done) = self.transfers.last() {
+            if let Some(text) = &done.text {
+                return self.render_text_card(card, done, text, cx);
+            }
             return card.child(
                 div()
                     .flex()
@@ -1046,6 +1116,99 @@ impl ReceiverView {
         card
     }
 
+    /// Text transfers are not files: show the text itself, with a copy button.
+    ///
+    /// gpui 0.2 has no selectable text, so copying is an explicit action — plus
+    /// the automatic copy that happens when the text arrives.
+    fn render_text_card(
+        &self,
+        card: Div,
+        item: &TransferItem,
+        text: &str,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let lines: Vec<&str> = text.lines().collect();
+        let mut block = div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .p_3()
+            .rounded_md()
+            .bg(rgb(0x0d1117));
+        // One element per line: gpui does not break lines on '\n' inside a div.
+        for line in lines.iter().take(TEXT_CARD_LINES) {
+            block = block.child(div().text_size(px(12.)).text_color(rgb(0xd6d6d6)).child(
+                if line.is_empty() {
+                    " ".to_string()
+                } else {
+                    line.to_string()
+                },
+            ));
+        }
+        if lines.len() > TEXT_CARD_LINES {
+            block = block.child(
+                div()
+                    .text_size(px(11.))
+                    .text_color(rgb(0x6a6a6e))
+                    .child(format!("…共 {} 行；点「复制」拿到完整文本", lines.len())),
+            );
+        }
+
+        card.child(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_3()
+                .child(
+                    div()
+                        .text_size(px(14.))
+                        .text_color(rgb(0x3fb950))
+                        .child("✓ 已收到文本"),
+                )
+                .child(
+                    div()
+                        .text_size(px(12.))
+                        .text_color(rgb(0x8b949e))
+                        .child(crate::notify::human_bytes(item.size)),
+                )
+                .child(
+                    div()
+                        .text_size(px(11.))
+                        .text_color(if item.copied {
+                            rgb(0x8b949e)
+                        } else {
+                            rgb(0xff7b72)
+                        })
+                        .child(if item.copied {
+                            "已复制到剪贴板，可直接粘贴"
+                        } else {
+                            "复制失败，点右侧按钮重试"
+                        }),
+                )
+                .child(div().flex_grow())
+                .child(button("复制").id("copy-text").on_click(
+                    cx.listener(|this, _: &ClickEvent, _window, cx| this.copy_last_text(cx)),
+                )),
+        )
+        .child(block)
+    }
+
+    /// Put the most recent text transfer back on the clipboard.
+    fn copy_last_text(&mut self, cx: &mut Context<Self>) {
+        let Some(text) = self.transfers.last().and_then(|item| item.text.clone()) else {
+            return;
+        };
+        if text.is_empty() {
+            return;
+        }
+        cx.write_to_clipboard(ClipboardItem::new_string(text));
+        if let Some(item) = self.transfers.last_mut() {
+            item.copied = true;
+        }
+        cx.notify();
+    }
+
     fn render_footer(&self) -> Div {
         let mut footer = div()
             .flex()
@@ -1073,7 +1236,7 @@ impl ReceiverView {
             footer = footer.child(div().text_size(px(12.)).text_color(rgb(0xff7b72)).child(err.clone()));
         } else {
             footer = footer.child(div().child(
-                "自动扫描所有显示器；需要缩小范围时点右上角「框选区域」。文件保存到 ~/Downloads。",
+                "自动扫描所有显示器；需要缩小范围时点右上角「框选区域」。文件保存到 ~/Downloads，文本直接进剪贴板。",
             ));
         }
 

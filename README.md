@@ -5,7 +5,7 @@
 ## 本 fork 的改动
 
 1. **新增 `host/`：屏幕捕获接收端（Rust）**
-   不用摄像头，直接扫屏幕上一块区域的二维码流，用来做「隔离虚拟机 ↔ 宿主机」这种没网络、没共享剪贴板的场景。**macOS/Linux 是 gpui 窗口版**（实时预览、拖拽框选、多显示器自动扫描、系统通知）；**Windows 是无界面控制台版**（`--display` / `--region` / `--out` / `--once` / `--check`），两者共用同一套捕获-扫描-解码-保存链路。协议映射、测试和已知限制见 [host/README.md](host/README.md)。
+   不用摄像头，直接扫屏幕上一块区域的二维码流，用来做「隔离虚拟机 ↔ 宿主机」这种没网络、没共享剪贴板的场景。**macOS/Linux 是 gpui 窗口版**（实时预览、拖拽框选、多显示器自动扫描、系统通知）；**Windows 是无界面控制台版**（`--display` / `--region` / `--out` / `--once` / `--check`），两者共用同一套捕获-扫描-解码-交付链路。**收到的文件写 `~/Downloads`；收到的文本不落盘，直接进系统剪贴板并在界面里显示全文**（发送端 Text 模式）。协议映射、测试和已知限制见 [host/README.md](host/README.md)。
 
 2. **新增单文件发送端构建 `apps/web/vite.config.single.ts`**
    `pnpm guest:build` → `apps/web/dist-single/index.html`，自包含、离线可用，拷进虚拟机双击就能当发送端。
