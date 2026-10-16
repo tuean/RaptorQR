@@ -19,13 +19,48 @@
 
 6. **重写 README**（即本文件）。
 
+7. **新增 `host/scripts/install_macos_app.sh`（`pnpm host:install`）**
+   构建最新接收端并安装到 `/Applications`。**改完 `host/` 的代码必须跑一次**，否则双击打开的
+   `/Applications/RaptorQR Receiver.app` 还是旧版（旧 bug 也一起留着）。
+
+## ⚠️ 改完代码必做：更新应用
+
+`/Applications/RaptorQR Receiver.app` 才是实际双击运行的那一份，它不会自己跟着源码变。
+**每次改动 `host/` 之后，都要执行**：
+
+```bash
+pnpm host:test         # 1. 测试全绿
+pnpm host:install      # 2. = host/scripts/install_macos_app.sh
+# → 构建 release（universal + 本地证书签名）
+# → 刷新 release/RaptorQR-Receiver-macos.zip
+# → 退出正在运行的接收端 → 覆盖 /Applications/RaptorQR Receiver.app → 校验签名
+# → 打印 arch / built at / sha256
+```
+
+要出完整产物（发送端单文件 HTML 等）就先 `pnpm release`，**再**跑 `pnpm host:install`：
+install 会把 zip 一起重打，保证 `release/`、zip、`/Applications` 三份完全一致。
+
+判断有没有生效，看输出的 **built at**（应为刚刚）和 **Signed Time**：
+
+```bash
+codesign -dvvv "/Applications/RaptorQR Receiver.app" 2>&1 | grep "Signed Time"
+```
+
+**sha256** 用来核对上面那三份是同一个文件；别拿它跟上一版比 —— 代码签名带时间戳，
+同样的源码重新签一次哈希就会变（所以脚本用 built at 而不是哈希来判断新旧）。
+
+签名用的是固定的本地证书（`RaptorQR Local Signing` / `TVA Local Signing`），所以重新安装
+**不会**再要一次屏幕录制权限。
+
 ## 用法
 
 ```bash
 pnpm install
 pnpm guest:build   # 虚拟机端：单文件发送页面
 pnpm host:run      # 宿主机端（macOS）：屏幕捕获接收，首次需授予「屏幕录制」权限
-pnpm release       # 出全部发布产物 → release/
+pnpm host:test     # 接收端 Rust 测试（host/ 改完先跑这个）
+pnpm host:install  # 构建最新接收端并装进 /Applications（改完 host/ 必做）
+pnpm release       # 出全部发布产物 → release/（单文件 HTML + .app/zip + 使用说明）
 
 # Windows 接收端（在 Windows 上，或下载 Actions 产物）
 cargo build --manifest-path host/Cargo.toml --release   # → raptorqr-host.exe（无界面，参数见 host/README.md）

@@ -19,6 +19,22 @@ cargo run --release
 首次运行会要求 **屏幕录制权限**(macOS: 系统设置 → 隐私与安全性 → 屏幕
 录制,勾选你的终端/应用),否则捕获到的画面是黑的。
 
+### 改完代码:把最新版装进 /Applications
+
+用户双击的是 `/Applications/RaptorQR Receiver.app`,它不会跟着源码变。**每次改动本目录
+下的代码之后都要重新安装**(否则运行的是旧二进制、旧 bug):
+
+```bash
+pnpm host:test      # 仓库根目录:先测试
+pnpm host:install   # 构建 release(universal + 本地证书签名)→ 覆盖 /Applications
+```
+
+`host/scripts/install_macos_app.sh` 会先退出正在运行的接收端,再 `ditto` 覆盖,最后校验
+签名并打印 `arch` / `built at` / `sha256`。确认装的是刚编的那版看 **built at**(和
+`codesign -dvvv` 里的 **Signed Time**);`sha256` 用来对 `/Applications` 与 `release/`
+是不是同一个文件 —— 签名带时间戳,同样的源码重签一次哈希也会变,别拿它跟上一版比。
+签名证书固定(`RaptorQR Local Signing` / `TVA Local Signing`),重装不会重置屏幕录制授权。
+
 ## 使用
 
 界面就三块:**顶部状态 → 中间当前传输进度 → 下方已接收文件列表**。

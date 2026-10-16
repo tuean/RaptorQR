@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
-# Build both deliverables into ./release/:
-#   1. RaptorQR-Sender.html     — single-file guest sender (copy into the VM)
-#   2. RaptorQR Receiver.app    — macOS receiver (double-click to run)
+# Build the release deliverables into ./release/:
+#   1. RaptorQR-Sender.html        — single-file guest sender (copy into the VM)
+#   2. RaptorQR Receiver.app       — macOS receiver (double-click to run)
+#   3. RaptorQR-Receiver-macos.zip — the same app zipped, for handing out
+#
+# Installing the app on THIS machine is a separate step: `pnpm host:install`.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -9,12 +12,18 @@ cd "$ROOT"
 OUT="$ROOT/release"
 mkdir -p "$OUT"
 
-echo "==> [1/2] guest sender: single-file HTML"
+echo "==> [1/3] guest sender: single-file HTML"
 pnpm --filter @raptorqr/web build:single
 cp apps/web/dist-single/index.html "$OUT/RaptorQR-Sender.html"
 
-echo "==> [2/2] host receiver: macOS app bundle"
+echo "==> [2/3] host receiver: macOS app bundle"
 "$ROOT/host/scripts/package_macos_app.sh" "$OUT" >/dev/null
+
+# Zip the freshly built bundle, so a hand-out can never lag behind the app.
+echo "==> [3/3] zip the receiver"
+rm -f "$OUT/RaptorQR-Receiver-macos.zip"
+ditto -c -k --sequesterRsrc --keepParent "$OUT/RaptorQR Receiver.app" \
+  "$OUT/RaptorQR-Receiver-macos.zip"
 
 SENDER_SIZE="$(du -h "$OUT/RaptorQR-Sender.html" | cut -f1)"
 cat > "$OUT/使用说明.txt" <<TXT

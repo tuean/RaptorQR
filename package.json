@@ -21,6 +21,7 @@
     "guest:build": "pnpm --filter @raptorqr/web build:single",
     "host:run": "cargo run --manifest-path host/Cargo.toml",
     "host:test": "cargo test --manifest-path host/Cargo.toml",
+    "host:install": "./host/scripts/install_macos_app.sh",
     "release": "./scripts/package_release.sh"
   },
   "keywords": [
