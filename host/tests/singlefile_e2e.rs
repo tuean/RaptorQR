@@ -53,7 +53,7 @@ fn single_file_sender_frames_reconstruct_payload() {
         let (w, h) = img.dimensions();
         let luma = rgba_to_luma(img.as_raw());
 
-        let packets = scan_qrs(&luma, w, h);
+        let packets = scan_qrs(luma, w, h, true);
         scanned += packets.len();
         if packets.is_empty() {
             eprintln!("{}: no QR symbols (blank/first frame?)", frame.display());

@@ -2,15 +2,15 @@
 //! transfer log. A background worker thread does capture + QR decode + FEC.
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 
-use crate::capture::{self, ScreenRect};
-use crate::qrscan::scan_qrs;
+use crate::capture::ScreenRect;
+use crate::scanner::{ScanConfig, Scanner};
 use crate::transfer::{save_completed, Delivery, TransferTracker};
 
 // ─── Shared state between the UI and the capture worker ─────────────────────
@@ -19,12 +19,14 @@ pub struct SharedState {
     /// Decode region: (display index, rect in that display's pixels).
     pub region: Mutex<Option<(usize, ScreenRect)>>,
     pub running: AtomicBool,
-    pub capture_fps: AtomicU32,
     /// Which display the preview shows (regions are selected on it).
     pub preview_display: AtomicUsize,
     pub display_count: AtomicUsize,
     /// Set when the UI wants a preview frame immediately.
     pub preview_request: AtomicBool,
+    /// True while the region picker is open. The worker only builds preview
+    /// frames then — they have no other consumer.
+    pub selecting: AtomicBool,
 }
 
 // ─── Worker → UI events ─────────────────────────────────────────────────────
@@ -68,14 +70,18 @@ pub enum WorkerEvent {
     CaptureError(String),
 }
 
-const CAPTURE_FPS: u32 = 8;
+/// Last committed region, kept for the lifetime of the process.
+///
+/// The window (and with it this view) is destroyed when it is closed, and the
+/// dock icon builds a fresh one; without this a reopen reset the decode region
+/// and the same corner had to be selected again by hand.
+static LAST_REGION: Mutex<Option<(usize, ScreenRect)>> = Mutex::new(None);
+
 /// Lines of a received text shown in the card; the clipboard gets all of it.
 const TEXT_CARD_LINES: usize = 8;
-const PREVIEW_MAX_W: u32 = 1024;
-const PREVIEW_INTERVAL: Duration = Duration::from_millis(350);
-/// Minimum gap between QR decodes of one display.
-const DECODE_INTERVAL: Duration = Duration::from_millis(100);
-const STATUS_INTERVAL: Duration = Duration::from_millis(250);
+/// Status events drive the repaint, so this is also the idle redraw rate: twice
+/// a second is plenty for a rate readout and halves the UI's CPU share.
+const STATUS_INTERVAL: Duration = Duration::from_millis(500);
 
 /// Capture + decode loop, runs on a background thread.
 ///
@@ -83,16 +89,11 @@ const STATUS_INTERVAL: Duration = Duration::from_millis(250);
 pub fn run_worker(shared: Arc<SharedState>, tx: mpsc::Sender<WorkerEvent>) {
     let debug = std::env::var_os("RAPTORQR_DEBUG").is_some();
     let mut tracker = TransferTracker::new();
-    let mut last_preview = Instant::now() - PREVIEW_INTERVAL;
+    let mut scanner = Scanner::new();
     let mut last_status = Instant::now();
     let mut status_frames = 0u64;
     let mut packets_decoded = 0u64;
     let mut qr_symbols = 0u64;
-    // Throttled per display: a single shared deadline would let the first
-    // display consume the budget and starve the others.
-    let mut last_decode: Vec<Instant> = Vec::new();
-    // Consecutive decodes whose frame was black (permission missing).
-    let mut black_frames = 0u32;
 
     loop {
         if !shared.running.load(Ordering::Relaxed) {
@@ -101,178 +102,128 @@ pub fn run_worker(shared: Arc<SharedState>, tx: mpsc::Sender<WorkerEvent>) {
         }
         let tick = Instant::now();
 
-        // Every display is scanned, so the QR can live on any of them; the
-        // preview (and therefore region selection) follows one of them.
-        let displays = capture::display_list();
-        let display_count = displays.len().max(1);
-        shared.display_count.store(display_count, Ordering::Relaxed);
-        let preview_display = shared
-            .preview_display
-            .load(Ordering::Relaxed)
-            .min(display_count - 1);
         let region = *shared.region.lock().unwrap();
+        let preview_display = shared.preview_display.load(Ordering::Relaxed);
+        let cfg = ScanConfig {
+            region,
+            only_display: None,
+            preview_display,
+            want_preview: shared.selecting.load(Ordering::Relaxed),
+            force_preview: shared.preview_request.swap(false, Ordering::Relaxed),
+        };
 
-        let mut captured_any = false;
-        for display in &displays {
-            let Some((rgba, w, h)) = capture::capture_display(display.index) else {
-                continue;
-            };
-            captured_any = true;
-            if display.index == preview_display {
-                status_frames += 1;
-            }
+        // One cadence tick: probe a single display while idle, or follow the
+        // display that carries the live QR stream at full rate.
+        let out = scanner.tick(tick, &cfg);
+        let display_count = out.display_count.max(1);
+        shared.display_count.store(display_count, Ordering::Relaxed);
+        status_frames += out.frames as u64;
+        qr_symbols += out.symbols.len() as u64;
 
-            // Preview (throttled), only for the selected display.
-            let preview_wanted = shared.preview_request.swap(false, Ordering::Relaxed);
-            if display.index == preview_display
-                && (preview_wanted || tick.duration_since(last_preview) >= PREVIEW_INTERVAL)
-            {
-                let (prgba, pw, ph) = capture::downscale(&rgba, w, h, PREVIEW_MAX_W);
-                let _ = tx.send(WorkerEvent::Preview {
-                    display: display.index,
-                    display_count,
-                    rgba: prgba,
-                    w: pw,
-                    h: ph,
-                    full_w: w,
-                    full_h: h,
-                });
-                last_preview = tick;
-            }
-
-            // Decode: the whole display, or just the selected region when the
-            // region belongs to this display.
-            let full = ScreenRect { x: 0, y: 0, w, h };
-            let scope = match region {
-                Some((region_display, rect)) if region_display == display.index => {
-                    rect.intersect(&full)
-                }
-                _ => full,
-            };
-            if last_decode.len() <= display.index {
-                // Start "due" so a new display is decoded immediately.
-                let due = tick.checked_sub(DECODE_INTERVAL).unwrap_or(tick);
-                last_decode.resize(display.index + 1, due);
-            }
-            if scope.area() == 0 || tick.duration_since(last_decode[display.index]) < DECODE_INTERVAL
-            {
-                continue;
-            }
-            last_decode[display.index] = tick;
-
-            if let Some((crgba, cw, ch)) = capture::crop(&rgba, w, h, &scope) {
-                let decode_started = Instant::now();
-                let luma = capture::rgba_to_luma(&crgba);
-                // Sampled brightness: a fully black frame means macOS is not
-                // giving us the screen (missing Screen Recording permission).
-                let samples = luma.len() / 97 + 1;
-                let mean = luma.iter().step_by(97).map(|&v| v as u64).sum::<u64>()
-                    / samples as u64;
-                if mean < 2 {
-                    black_frames += 1;
-                } else {
-                    black_frames = 0;
-                }
-                let found = scan_qrs(&luma, cw, ch);
-                qr_symbols += found.len() as u64;
-                if debug {
-                    let (progress, note) = match tracker.status() {
-                        Some(status) if status.complete.is_some() => {
-                            (100.0, "complete (stream looping)")
-                        }
-                        Some(status) => (status.progress * 100.0, "receiving"),
-                        None => (0.0, "idle"),
-                    };
-                    eprintln!(
-                        "[recv] display {} region {}×{} qr_found={} packets={} progress={progress:.1}% {note} decode={}ms session={} key={:?} esi={:?}",
-                        display.index + 1,
-                        cw,
-                        ch,
-                        found.len(),
-                        packets_decoded,
-                        decode_started.elapsed().as_millis(),
-                        tracker.session_seq(),
-                        tracker.session_key(),
-                        tracker.received_esis()
-                    );
-                }
-                for raw in found {
-                    match tracker.feed(&raw) {
-                        crate::transfer::FeedResult::Ignored => {}
-                        crate::transfer::FeedResult::Progress => {
-                            packets_decoded += 1;
-                        }
-                        crate::transfer::FeedResult::Duplicate => {
-                            // Same stream looping again — already saved.
-                        }
-                        crate::transfer::FeedResult::Completed(t) => {
-                            packets_decoded += 1;
-                            match save_completed(&t, None) {
-                                Some((path, written)) => {
-                                    tracker.mark_saved(path.clone(), t.body.len());
-                                    if debug {
-                                        eprintln!(
-                                            "[recv] COMPLETE {} → {} ({} bytes, {})",
-                                            t.filename,
-                                            path.display(),
-                                            t.body.len(),
-                                            if written {
-                                                "saved"
-                                            } else {
-                                                "identical file already there"
-                                            }
-                                        );
-                                    }
-                                    // Announce every receipt — including one
-                                    // whose identical file is already on disk,
-                                    // otherwise the user sees nothing at all.
-                                    if written {
-                                        crate::notify::notify_transfer_received(
-                                            &t.filename,
-                                            &path.display().to_string(),
-                                            t.body.len(),
-                                        );
-                                    }
-                                    let _ = tx.send(WorkerEvent::Transfer {
-                                        filename: t.filename,
-                                        path,
-                                        size: t.body.len(),
-                                        written,
-                                        text: None,
-                                    });
-                                }
-                                // Text never touches the disk: the UI thread
-                                // puts it on the clipboard and shows it.
-                                None => {
-                                    let text = t.as_text().unwrap_or_default();
-                                    if debug {
-                                        eprintln!(
-                                            "[recv] COMPLETE text ({} bytes, {} chars)",
-                                            t.body.len(),
-                                            text.chars().count()
-                                        );
-                                    }
-                                    crate::notify::notify_text_received(&text);
-                                    let _ = tx.send(WorkerEvent::Transfer {
-                                        filename: t.filename,
-                                        path: PathBuf::new(),
-                                        size: t.body.len(),
-                                        written: true,
-                                        text: Some(text),
-                                    });
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+        if let Some(preview) = out.preview {
+            let _ = tx.send(WorkerEvent::Preview {
+                display: preview.display,
+                display_count: preview.display_count,
+                rgba: preview.rgba,
+                w: preview.w,
+                h: preview.h,
+                full_w: preview.full_w,
+                full_h: preview.full_h,
+            });
         }
 
-        if !captured_any {
+        if out.frames == 0 {
             let _ = tx.send(WorkerEvent::CaptureError(
                 "screen capture failed — grant Screen Recording permission?".into(),
             ));
             std::thread::sleep(Duration::from_millis(1000));
+        }
+
+        let found = out.symbols;
+        if debug && !found.is_empty() {
+            let (progress, note) = match tracker.status() {
+                Some(status) if status.complete.is_some() => (100.0, "complete (stream looping)"),
+                Some(status) => (status.progress * 100.0, "receiving"),
+                None => (0.0, "idle"),
+            };
+            eprintln!(
+                "[recv] {} qr_found={} packets={} progress={progress:.1}% {note} session={} key={:?} esi={:?}",
+                scanner.mode().label(),
+                found.len(),
+                packets_decoded,
+                tracker.session_seq(),
+                tracker.session_key(),
+                tracker.received_esis()
+            );
+        }
+        for raw in found {
+            match tracker.feed(&raw) {
+                crate::transfer::FeedResult::Ignored => {}
+                crate::transfer::FeedResult::Progress => {
+                    packets_decoded += 1;
+                }
+                crate::transfer::FeedResult::Duplicate => {
+                    // Same stream looping again — already saved.
+                }
+                crate::transfer::FeedResult::Completed(t) => {
+                    packets_decoded += 1;
+                    match save_completed(&t, None) {
+                        Some((path, written)) => {
+                            tracker.mark_saved(path.clone(), t.body.len());
+                            if debug {
+                                eprintln!(
+                                    "[recv] COMPLETE {} → {} ({} bytes, {})",
+                                    t.filename,
+                                    path.display(),
+                                    t.body.len(),
+                                    if written {
+                                        "saved"
+                                    } else {
+                                        "identical file already there"
+                                    }
+                                );
+                            }
+                            // Announce every receipt — including one
+                            // whose identical file is already on disk,
+                            // otherwise the user sees nothing at all.
+                            if written {
+                                crate::notify::notify_transfer_received(
+                                    &t.filename,
+                                    &path.display().to_string(),
+                                    t.body.len(),
+                                );
+                            }
+                            let _ = tx.send(WorkerEvent::Transfer {
+                                filename: t.filename,
+                                path,
+                                size: t.body.len(),
+                                written,
+                                text: None,
+                            });
+                        }
+                        // Text never touches the disk: the UI thread
+                        // puts it on the clipboard and shows it.
+                        None => {
+                            let text = t.as_text().unwrap_or_default();
+                            if debug {
+                                eprintln!(
+                                    "[recv] COMPLETE text ({} bytes, {} chars)",
+                                    t.body.len(),
+                                    text.chars().count()
+                                );
+                            }
+                            crate::notify::notify_text_received(&text);
+                            let _ = tx.send(WorkerEvent::Transfer {
+                                filename: t.filename,
+                                path: PathBuf::new(),
+                                size: t.body.len(),
+                                written: true,
+                                text: Some(text),
+                            });
+                        }
+                    }
+                }
+            }
         }
 
         // Status (throttled).
@@ -322,7 +273,7 @@ pub fn run_worker(shared: Arc<SharedState>, tx: mpsc::Sender<WorkerEvent>) {
                 None => format!(
                     "all {} display(s), full screen (preview {}/{})",
                     display_count,
-                    preview_display + 1,
+                    preview_display.min(display_count - 1) + 1,
                     display_count
                 ),
             };
@@ -331,7 +282,7 @@ pub fn run_worker(shared: Arc<SharedState>, tx: mpsc::Sender<WorkerEvent>) {
                 packets: packets_decoded,
                 qr_per_second,
                 scanning,
-                capture_black: black_frames >= 6,
+                capture_black: scanner.capture_black(),
                 progress,
                 blocks,
                 note,
@@ -342,8 +293,7 @@ pub fn run_worker(shared: Arc<SharedState>, tx: mpsc::Sender<WorkerEvent>) {
         }
 
         let elapsed = tick.elapsed();
-        let period =
-            Duration::from_micros(1_000_000 / shared.capture_fps.load(Ordering::Relaxed) as u64);
+        let period = scanner.interval();
         if elapsed < period {
             std::thread::sleep(period - elapsed);
         }
@@ -401,15 +351,27 @@ pub struct ReceiverView {
     last_error: Option<String>,
 }
 
+impl Drop for ReceiverView {
+    fn drop(&mut self) {
+        // Closing the window drops this view; without the `running` flag the
+        // capture thread lived on, grabbing screens for a window nobody can
+        // see (and it kept its CPU share forever).
+        self.shared.running.store(false, Ordering::Relaxed);
+        *LAST_REGION.lock().unwrap() = self.region;
+    }
+}
+
 impl ReceiverView {
     pub fn new(cx: &mut Context<Self>) -> Self {
+        let start_in_picker = std::env::var_os("RAPTORQR_START_IN_PICKER").is_some();
+        let restored_region = *LAST_REGION.lock().unwrap();
         let shared = Arc::new(SharedState {
-            region: Mutex::new(None),
+            region: Mutex::new(restored_region),
             running: AtomicBool::new(true),
-            capture_fps: AtomicU32::new(CAPTURE_FPS),
             preview_display: AtomicUsize::new(0),
             display_count: AtomicUsize::new(1),
             preview_request: AtomicBool::new(true),
+            selecting: AtomicBool::new(start_in_picker),
         });
         let (tx, rx) = mpsc::channel::<WorkerEvent>();
         let worker_shared = shared.clone();
@@ -418,11 +380,16 @@ impl ReceiverView {
         cx.spawn(async |this: WeakEntity<ReceiverView>, cx: &mut AsyncApp| {
             loop {
                 cx.background_executor()
-                    .timer(Duration::from_millis(60))
+                    .timer(Duration::from_millis(200))
                     .await;
                 let _ = this.update(cx, |this, cx| {
-                    this.drain_events(cx);
-                    cx.notify();
+                    // Repaint only when the worker actually produced something.
+                    // The old unconditional `notify()` at 60 ms kept the window
+                    // repainting 16 times a second for a screen that barely
+                    // changes.
+                    if this.drain_events(cx) {
+                        cx.notify();
+                    }
                 });
             }
         })
@@ -438,10 +405,10 @@ impl ReceiverView {
             full: None,
             preview_display: 0,
             display_count: 1,
-            region: None,
+            region: restored_region,
             scanning: String::new(),
             capture_black: false,
-            selecting: std::env::var_os("RAPTORQR_START_IN_PICKER").is_some(),
+            selecting: start_in_picker,
             canvas_bounds: None,
             drag_start: None,
             drag_current: None,
@@ -458,9 +425,13 @@ impl ReceiverView {
 
     /// Drain worker events. Runs on the UI thread because it is the only place
     /// allowed to touch the clipboard.
-    fn drain_events(&mut self, cx: &mut Context<Self>) {
+    ///
+    /// Returns whether anything arrived — the caller repaints only then.
+    fn drain_events(&mut self, cx: &mut Context<Self>) -> bool {
         let rx = self.events.lock().unwrap();
+        let mut changed = false;
         for event in rx.try_iter() {
+            changed = true;
             match event {
                 WorkerEvent::Preview {
                     display,
@@ -547,6 +518,7 @@ impl ReceiverView {
                 }
             }
         }
+        changed
     }
 
     fn toggle_running(&mut self, _: &mut Context<Self>) {
@@ -556,6 +528,9 @@ impl ReceiverView {
 
     fn open_region_picker(&mut self, _: &mut Context<Self>) {
         self.selecting = true;
+        // Preview frames are only built while the picker is open — tell the
+        // worker to start producing them, now rather than at its next tick.
+        self.shared.selecting.store(true, Ordering::Relaxed);
         self.drag_start = None;
         self.drag_current = None;
         // Don't wait for the next throttled preview tick.
@@ -564,6 +539,7 @@ impl ReceiverView {
 
     fn close_region_picker(&mut self, _: &mut Context<Self>) {
         self.selecting = false;
+        self.shared.selecting.store(false, Ordering::Relaxed);
         self.drag_start = None;
         self.drag_current = None;
         // Keep the last preview: reopening the picker then shows a picture
@@ -675,6 +651,7 @@ impl ReceiverView {
                     self.region = Some(scoped);
                     *self.shared.region.lock().unwrap() = Some(scoped);
                     self.selecting = false;
+                    self.shared.selecting.store(false, Ordering::Relaxed);
                     self.preview_pending_drop = self.preview.take();
                     self.preview_dims = (0, 0);
                 }

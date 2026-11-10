@@ -8,6 +8,7 @@ pub mod notify;
 pub mod protocol;
 pub mod qrscan;
 pub mod raptorq;
+pub mod scanner;
 pub mod transfer;
 
 #[cfg(not(windows))]

@@ -15,13 +15,10 @@ use std::time::{Duration, Instant};
 use crate::capture::{self, ScreenRect};
 use crate::notify::human_bytes;
 use crate::qrscan::scan_qrs;
+use crate::scanner::{ScanConfig, Scanner};
 use crate::transfer::{save_completed, FeedResult, TransferTracker};
 
-/// Minimum gap between QR decodes of one display.
-const DECODE_INTERVAL: Duration = Duration::from_millis(100);
 const STATUS_INTERVAL: Duration = Duration::from_millis(500);
-/// Do not spin when capture returns nothing (no display / no permission).
-const IDLE_SLEEP: Duration = Duration::from_millis(500);
 
 #[derive(Debug, Default, Clone)]
 pub struct Args {
@@ -55,137 +52,99 @@ pub fn run() {
     println!("press Ctrl-C to stop\n");
 
     let mut tracker = TransferTracker::new();
-    let mut last_decode: Vec<Instant> = Vec::new();
+    let mut scanner = Scanner::new();
     let mut packets = 0u64;
     let mut symbols = 0u64;
     let mut last_status = Instant::now();
     let mut status_symbols = 0u64;
     let mut black_note = false;
 
+    // A configured region always wins over `--display`: it can only live on one
+    // display, so the others are not scanned at all.
+    let cfg = ScanConfig {
+        region: args.region.map(|rect| (args.display.unwrap_or(0), rect)),
+        only_display: args.display,
+        preview_display: 0,
+        want_preview: false,
+        force_preview: false,
+    };
+
     'receive: loop {
         let tick = Instant::now();
-        let displays = capture::display_list();
-        if displays.is_empty() {
+        let out = scanner.tick(tick, &cfg);
+        if out.display_count == 0 {
             eprintln!("✗ no display to capture — is this a headless session?");
             std::thread::sleep(Duration::from_secs(1));
             continue;
         }
-
-        let mut captured_any = false;
-        for display in &displays {
-            // A configured region always wins over `--display`: it can only
-            // live on one display, so the others are not scanned at all.
-            match (args.region, args.display) {
-                (Some(_), _) | (None, Some(_)) => {
-                    let wanted = args.display.unwrap_or(display.index);
-                    if display.index != wanted {
-                        continue;
-                    }
-                }
-                (None, None) => {}
-            }
-
-            let Some((rgba, w, h)) = capture::capture_display(display.index) else {
-                continue;
-            };
-            captured_any = true;
-
-            let full = ScreenRect { x: 0, y: 0, w, h };
-            let scope = args
-                .region
-                .map(|rect| rect.intersect(&full))
-                .unwrap_or(full);
-            if scope.area() == 0 {
-                continue;
-            }
-
-            if last_decode.len() <= display.index {
-                // Start "due" so a new display is decoded immediately.
-                let due = tick.checked_sub(DECODE_INTERVAL).unwrap_or(tick);
-                last_decode.resize(display.index + 1, due);
-            }
-            if tick.duration_since(last_decode[display.index]) < DECODE_INTERVAL {
-                continue;
-            }
-            last_decode[display.index] = tick;
-
-            let Some((crgba, cw, ch)) = capture::crop(&rgba, w, h, &scope) else {
-                continue;
-            };
-            let luma = capture::rgba_to_luma(&crgba);
-
-            // Sampled brightness: black frames mean the OS is not handing over
-            // the screen (missing macOS Screen Recording permission).
-            let samples = luma.len() / 97 + 1;
-            let mean = luma.iter().step_by(97).map(|&v| v as u64).sum::<u64>() / samples as u64;
-            if mean < 2 && !black_note {
-                black_note = true;
-                println!("{}", black_frame_hint());
-            }
-
-            let found = scan_qrs(&luma, cw, ch);
-            symbols += found.len() as u64;
-            for raw in found {
-                match tracker.feed(&raw) {
-                    FeedResult::Ignored | FeedResult::Duplicate => {}
-                    FeedResult::Progress => packets += 1,
-                    FeedResult::Completed(transfer) => {
-                        packets += 1;
-                        match save_completed(&transfer, args.out_dir.as_deref()) {
-                            Some((path, written)) => {
-                                tracker.mark_saved(path.clone(), transfer.body.len());
-                                println!(
-                                    "\n✓ 已接收 {} ({}) → {}{}",
-                                    transfer.filename,
-                                    human_bytes(transfer.body.len()),
-                                    path.display(),
-                                    if written {
-                                        ""
-                                    } else {
-                                        "  [内容相同，未重复写入]"
-                                    }
-                                );
-                                if written {
-                                    crate::notify::notify_transfer_received(
-                                        &transfer.filename,
-                                        &path.display().to_string(),
-                                        transfer.body.len(),
-                                    );
-                                }
-                            }
-                            // Text is never written to disk: it goes to the
-                            // clipboard, which is what "receiving text" means.
-                            None => {
-                                let text = transfer.as_text().unwrap_or_default();
-                                let copied = crate::clipboard::copy_text(&text);
-                                println!(
-                                    "\n✓ 已收到文本 ({} · {} 字符) — {}",
-                                    human_bytes(transfer.body.len()),
-                                    text.chars().count(),
-                                    if copied {
-                                        "已复制到剪贴板"
-                                    } else {
-                                        "复制失败：没有可用的剪贴板工具"
-                                    }
-                                );
-                                print_text_preview(&text);
-                                if copied {
-                                    crate::notify::notify_text_received(&text);
-                                }
-                            }
-                        }
-                        if args.once {
-                            break 'receive;
-                        }
-                    }
-                }
-            }
-        }
-
-        if !captured_any {
+        if out.frames == 0 {
             eprintln!("✗ screen capture failed — {}", capture_failure_hint());
             std::thread::sleep(Duration::from_secs(1));
             continue;
+        }
+
+        // Black frames mean the OS is not handing over the screen (missing
+        // macOS Screen Recording permission).
+        if scanner.capture_black() && !black_note {
+            black_note = true;
+            println!("{}", black_frame_hint());
+        }
+
+        symbols += out.symbols.len() as u64;
+        for raw in out.symbols {
+            match tracker.feed(&raw) {
+                FeedResult::Ignored | FeedResult::Duplicate => {}
+                FeedResult::Progress => packets += 1,
+                FeedResult::Completed(transfer) => {
+                    packets += 1;
+                    match save_completed(&transfer, args.out_dir.as_deref()) {
+                        Some((path, written)) => {
+                            tracker.mark_saved(path.clone(), transfer.body.len());
+                            println!(
+                                "\n✓ 已接收 {} ({}) → {}{}",
+                                transfer.filename,
+                                human_bytes(transfer.body.len()),
+                                path.display(),
+                                if written {
+                                    ""
+                                } else {
+                                    "  [内容相同，未重复写入]"
+                                }
+                            );
+                            if written {
+                                crate::notify::notify_transfer_received(
+                                    &transfer.filename,
+                                    &path.display().to_string(),
+                                    transfer.body.len(),
+                                );
+                            }
+                        }
+                        // Text is never written to disk: it goes to the
+                        // clipboard, which is what "receiving text" means.
+                        None => {
+                            let text = transfer.as_text().unwrap_or_default();
+                            let copied = crate::clipboard::copy_text(&text);
+                            println!(
+                                "\n✓ 已收到文本 ({} · {} 字符) — {}",
+                                human_bytes(transfer.body.len()),
+                                text.chars().count(),
+                                if copied {
+                                    "已复制到剪贴板"
+                                } else {
+                                    "复制失败：没有可用的剪贴板工具"
+                                }
+                            );
+                            print_text_preview(&text);
+                            if copied {
+                                crate::notify::notify_text_received(&text);
+                            }
+                        }
+                    }
+                    if args.once {
+                        break 'receive;
+                    }
+                }
+            }
         }
 
         if tick.duration_since(last_status) >= STATUS_INTERVAL {
@@ -198,11 +157,17 @@ pub fn run() {
                 Some(status) => format!("{:.0}%", status.progress * 100.0),
                 None => "waiting for QR".into(),
             };
-            print!("\r[{progress}] symbols {symbols} ({rate:.1}/s) · packets {packets}   ");
+            print!(
+                "\r[{progress}] symbols {symbols} ({rate:.1}/s) · packets {packets}   "
+            );
             let _ = std::io::stdout().flush();
         }
 
-        std::thread::sleep(IDLE_SLEEP);
+        let elapsed = tick.elapsed();
+        let period = scanner.interval();
+        if elapsed < period {
+            std::thread::sleep(period - elapsed);
+        }
     }
 }
 
@@ -319,7 +284,7 @@ pub fn check_capture() {
             continue;
         }
 
-        let packets = scan_qrs(&luma, w, h);
+        let packets = scan_qrs(luma, w, h, true);
         total_qr += packets.len();
         println!("  QR codes decoded: {}", packets.len());
         for (i, packet) in packets.iter().enumerate() {

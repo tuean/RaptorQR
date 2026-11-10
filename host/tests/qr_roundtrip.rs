@@ -45,7 +45,7 @@ fn load_frames(name: &str) -> Option<Vec<(u32, u32, Vec<u8>)>> {
 /// Decode one rendered frame back to its transport packet bytes.
 fn frame_to_packet(w: u32, h: u32, rgba: &[u8]) -> Vec<Vec<u8>> {
     let luma = rgba_to_luma(rgba);
-    let results = scan_qrs(&luma, w, h);
+    let results = scan_qrs(luma, w, h, true);
     for r in &results {
         assert!(
             parse_packet(r).is_ok(),

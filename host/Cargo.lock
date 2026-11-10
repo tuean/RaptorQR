@@ -4756,6 +4756,8 @@ dependencies = [
  "flate2",
  "gpui",
  "image",
+ "objc2-core-foundation",
+ "objc2-core-graphics",
  "raptorq",
  "rxing",
  "xcap",

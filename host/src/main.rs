@@ -41,8 +41,32 @@ fn main() {
 
 #[cfg(not(windows))]
 fn gui_main() {
-    Application::new().run(|cx: &mut App| {
-        cx.open_window(
+    let application = Application::new();
+
+    // Closing the window destroys it (and the view, which stops the capture
+    // thread). macOS keeps the app alive in the dock, so a second launch --
+    // clicking the dock icon -- has to build a new window; without this the
+    // icon just bounced and no window was ever created again.
+    application.on_reopen(|cx| {
+        if cx.windows().is_empty() {
+            open_receiver_window(cx);
+        } else {
+            for handle in cx.windows() {
+                let _ = handle.update(cx, |_, window, _| window.activate_window());
+                break;
+            }
+        }
+        cx.activate(true);
+    });
+
+    application.run(|cx: &mut App| {
+        open_receiver_window(cx);
+    });
+}
+
+#[cfg(not(windows))]
+fn open_receiver_window(cx: &mut App) {
+    cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
                     None,
@@ -57,7 +81,6 @@ fn gui_main() {
                 ..Default::default()
             },
             |_window, cx| cx.new(|cx| raptorqr_host::ui::ReceiverView::new(cx)),
-        )
-        .expect("failed to open the receiver window");
-    });
+    )
+    .expect("failed to open the receiver window");
 }

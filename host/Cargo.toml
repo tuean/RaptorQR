@@ -17,4 +17,11 @@ image = "0.25"
 [target.'cfg(not(windows))'.dependencies]
 gpui = { version = "0.2.2", features = ["runtime_shaders"] }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+# Direct CoreGraphics use: xcap copies the screen three times per frame (provider
+# bytes → row-stripped copy → BGRA→RGBA swap); reading the provider buffer here
+# and converting straight to luma is one pass instead of three.
+objc2-core-foundation = "0.3.2"
+objc2-core-graphics = "0.3.2"
+
 [dev-dependencies]
