@@ -246,7 +246,13 @@ impl Scanner {
         let started = Instant::now();
         let mut frames: Vec<Captured> = Vec::new();
         for index in targets {
-            if let Some(frame) = capture::capture_raw(index) {
+            // Windows copies only the configured region (`BitBlt` costs what it
+            // copies); other platforms grab the whole display and crop in
+            // `decode`.
+            let region = cfg
+                .region
+                .and_then(|(display, rect)| (display == index).then_some(rect));
+            if let Some(frame) = capture::capture_raw_scoped(index, region) {
                 out.frames += 1;
                 frames.push(Captured { index, frame });
             }
@@ -341,8 +347,11 @@ impl Scanner {
             w: frame.frame.w,
             h: frame.frame.h,
         };
-        let scope = match cfg.region {
-            Some((display, rect)) if display == frame.index => rect.intersect(&bounds),
+        // A frame that was grabbed already cropped (Windows) is its own bounds:
+        // its (0,0) is the region origin, not the display's.
+        let scope = match (frame.frame.scope, cfg.region) {
+            (Some(_), _) => bounds,
+            (None, Some((display, rect))) if display == frame.index => rect.intersect(&bounds),
             _ => bounds,
         };
         if scope.area() == 0 {

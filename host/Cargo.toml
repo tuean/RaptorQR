@@ -2,19 +2,20 @@
 name = "raptorqr-host"
 version = "0.1.0"
 edition = "2021"
-description = "RaptorQR host receiver: screen-capture QR reader + RaptorQ FEC decoder with a gpui UI"
+description = "RaptorQR host receiver: screen-capture QR reader + RaptorQ FEC decoder with gpui (macOS/Linux) and iced (Windows) UIs"
 license = "MIT"
 
 [dependencies]
-xcap = "0.9"
 rxing = "0.9"
 raptorq = "2.0"
 flate2 = "1.1"
 image = "0.25"
 
-# gpui has no Windows backend, so the GUI (and its notifications) only build on
-# macOS/Linux. On Windows the receiver runs headless — see src/console.rs.
+# gpui has no Windows backend (and Blade needs Metal/Vulkan/DX12, so there is no
+# CPU fallback either), so the GUI only builds on macOS/Linux. On Windows the
+# receiver uses iced instead — see the `cfg(windows)` block below.
 [target.'cfg(not(windows))'.dependencies]
+xcap = "0.9"
 gpui = { version = "0.2.2", features = ["runtime_shaders"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
@@ -23,5 +24,38 @@ gpui = { version = "0.2.2", features = ["runtime_shaders"] }
 # and converting straight to luma is one pass instead of three.
 objc2-core-foundation = "0.3.2"
 objc2-core-graphics = "0.3.2"
+
+# Windows: iced with the CPU rasteriser only.
+#
+# `default-features = false` is load-bearing: iced 0.14 turns on BOTH `wgpu` and
+# `tiny-skia` by default, and with wgpu compiled in it is built first, fails to
+# find an adapter on a GPU-less machine, and the window comes up black. Keeping
+# only `tiny-skia` makes `iced_winit` render through `softbuffer`, which on
+# Windows is a plain DIB + `BitBlt` — no 3D device, no WARP, no driver.
+#
+# `image-without-codecs` (not `image`): frames arrive as raw RGBA from our own
+# capture code, so the PNG/JPEG decoders would never be called.
+#
+# `smol` is the futures backend, and it is not interchangeable with
+# `thread-pool`: `iced::time::every` only exists in the tokio and smol backends
+# (iced_futures' thread-pool `time` module is empty), and the poll that drains
+# the capture worker's channel needs it.
+[target.'cfg(windows)'.dependencies]
+iced = { version = "0.14", default-features = false, features = [
+    "tiny-skia",
+    "canvas",
+    "image-without-codecs",
+    "crisp",
+    "smol",
+] }
+# GDI screen capture (see src/capture_win.rs). xcap is deliberately not used:
+# its Windows path is DXGI desktop duplication, which needs a real D3D11 adapter.
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_System_Console",
+    "Win32_UI_HiDpi",
+    "Win32_UI_WindowsAndMessaging",
+] }
 
 [dev-dependencies]

@@ -325,7 +325,7 @@ pub fn check_capture() {
 
 // ─── flags ─────────────────────────────────────────────────────────────────
 
-fn parse_args() -> Args {
+pub fn parse_args() -> Args {
     let mut args = Args::default();
     for arg in std::env::args().skip(1) {
         if arg == "--once" {

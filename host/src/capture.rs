@@ -1,19 +1,24 @@
-//! Screen capture via xcap (CGWindowListCreateImage on macOS).
+//! Screen capture: CoreGraphics on macOS, GDI `BitBlt` on Windows, xcap elsewhere.
 //!
 //! Display `index` follows xcap's order with the primary display first, so
 //! `index = 0` is the main screen. Every function works in **monitor-local
 //! physical pixels**: `(0,0)` is that display's top-left corner, and a Retina
 //! display captures at 2× its logical point size.
 
+#[cfg(not(windows))]
 use std::cell::RefCell;
+#[cfg(not(windows))]
 use std::time::{Duration, Instant};
 
+#[cfg(not(windows))]
 use xcap::Monitor;
 
 /// How long a [`Monitor::all`] result is reused. Enumerating displays walks
 /// CoreGraphics, and the capture loop used to do it once per display per tick.
+#[cfg(not(windows))]
 const MONITOR_CACHE_TTL: Duration = Duration::from_secs(2);
 
+#[cfg(not(windows))]
 thread_local! {
     static MONITORS: RefCell<Option<(Instant, Vec<Monitor>)>> = RefCell::new(None);
 }
@@ -63,6 +68,33 @@ pub struct DisplayInfo {
 }
 
 /// Connected displays, primary first. `index` values match [`capture_display`].
+#[cfg(windows)]
+pub fn display_list() -> Vec<DisplayInfo> {
+    if std::env::var_os("RAPTORQR_FAKE_SCREEN").is_some() {
+        return vec![DisplayInfo {
+            index: 0,
+            name: "Fake screen".to_string(),
+            logical_w: 0,
+            logical_h: 0,
+            primary: true,
+        }];
+    }
+
+    crate::capture_win::monitors()
+        .into_iter()
+        .enumerate()
+        .map(|(index, monitor)| DisplayInfo {
+            index,
+            name: monitor.name,
+            logical_w: monitor.w,
+            logical_h: monitor.h,
+            primary: monitor.primary,
+        })
+        .collect()
+}
+
+/// Connected displays, primary first. `index` values match [`capture_display`].
+#[cfg(not(windows))]
 pub fn display_list() -> Vec<DisplayInfo> {
     if std::env::var_os("RAPTORQR_FAKE_SCREEN").is_some() {
         // The fake screen is a single virtual display; asking CoreGraphics would
@@ -92,6 +124,7 @@ pub fn display_list() -> Vec<DisplayInfo> {
 }
 
 /// Cached monitor list, primary first, cloned out of the thread-local slot.
+#[cfg(not(windows))]
 fn monitors() -> Vec<Monitor> {
     MONITORS.with(|cell| {
         let mut slot = cell.borrow_mut();
@@ -112,14 +145,27 @@ fn monitors() -> Vec<Monitor> {
     })
 }
 
+#[cfg(not(windows))]
 fn display_at(index: usize) -> Option<Monitor> {
     monitors().into_iter().nth(index)
 }
 
 /// Logical size of display `index`, for display/diagnostics only.
+#[cfg(not(windows))]
 pub fn logical_size(index: usize) -> Option<(u32, u32)> {
     let monitor = display_at(index)?;
     Some((monitor.width().ok()?, monitor.height().ok()?))
+}
+
+/// Logical size of display `index`.
+///
+/// GDI works in physical pixels already (see [`crate::capture_win::dpi_aware`]),
+/// so the monitor rect is the logical size here.
+#[cfg(windows)]
+pub fn logical_size(index: usize) -> Option<(u32, u32)> {
+    let monitors = crate::capture_win::monitors();
+    let monitor = monitors.get(index)?;
+    Some((monitor.w, monitor.h))
 }
 
 /// Capture display `index`, returning RGBA pixels + **physical** dimensions.
@@ -127,6 +173,7 @@ pub fn logical_size(index: usize) -> Option<(u32, u32)> {
 /// `RAPTORQR_FAKE_SCREEN=<dir|file>` replays PNG frames instead of grabbing the
 /// screen (debug/demo hook: lets the whole receive path run without a display,
 /// e.g. from the fixtures captured by `scripts/capture_singlefile_frames.mjs`).
+#[cfg(not(windows))]
 pub fn capture_display(index: usize) -> Option<(Vec<u8>, u32, u32)> {
     if let Some(source) = std::env::var_os("RAPTORQR_FAKE_SCREEN") {
         // The fake screen is a single virtual display.
@@ -143,6 +190,33 @@ pub fn capture_display(index: usize) -> Option<(Vec<u8>, u32, u32)> {
     Some((img.into_raw(), w, h))
 }
 
+/// Capture display `index` through GDI, returning RGBA + physical dimensions.
+#[cfg(windows)]
+pub fn capture_display(index: usize) -> Option<(Vec<u8>, u32, u32)> {
+    if let Some(source) = std::env::var_os("RAPTORQR_FAKE_SCREEN") {
+        return if index == 0 {
+            replay_frame(std::path::Path::new(&source))
+        } else {
+            None
+        };
+    }
+
+    let monitors = crate::capture_win::monitors();
+    let monitor = monitors.get(index)?;
+    let (bgra, w, h) = crate::capture_win::capture_bgra(monitor, None)?;
+    Some((bgra_to_rgba(&bgra), w, h))
+}
+
+/// Swap B and R on every pixel. GDI hands out BGRA; `image`/`iced` want RGBA.
+#[cfg(windows)]
+fn bgra_to_rgba(bgra: &[u8]) -> Vec<u8> {
+    let mut rgba = bgra.to_vec();
+    for pixel in rgba.chunks_exact_mut(4) {
+        pixel.swap(0, 2);
+    }
+    rgba
+}
+
 /// One freshly grabbed frame, still in the compositor's own buffer.
 ///
 /// `xcap` turns a grab into an RGBA `Vec` with three full passes over the pixels
@@ -156,8 +230,12 @@ pub struct RawFrame {
     stride: usize,
     pub w: u32,
     pub h: u32,
-    /// True for BGRA grabs (CoreGraphics), false for RGBA replays.
+    /// True for BGRA grabs (CoreGraphics, GDI), false for RGBA replays.
     bgra: bool,
+    /// The monitor-local rect these pixels already cover, when the grab was
+    /// cropped (Windows). `None` means the frame starts at that display's origin
+    /// and spans the whole display.
+    pub scope: Option<ScreenRect>,
 }
 
 impl RawFrame {
@@ -233,6 +311,7 @@ pub fn capture_raw(index: usize) -> Option<RawFrame> {
             w,
             h,
             bgra: false,
+            scope: None,
         });
     }
 
@@ -262,6 +341,7 @@ pub fn capture_raw(index: usize) -> Option<RawFrame> {
         w,
         h,
         bgra: true,
+        scope: None,
     })
 }
 
@@ -273,7 +353,7 @@ pub fn capture_luma(index: usize) -> Option<(Vec<u8>, u32, u32)> {
 
 /// Grab display `index` to luma, via the RGBA path on platforms without the
 /// direct CoreGraphics reader.
-#[cfg(not(target_os = "macos"))]
+#[cfg(all(not(target_os = "macos"), not(windows)))]
 pub fn capture_luma(index: usize) -> Option<(Vec<u8>, u32, u32)> {
     let (rgba, w, h) = capture_display(index)?;
     let rect = ScreenRect { x: 0, y: 0, w, h };
@@ -281,7 +361,7 @@ pub fn capture_luma(index: usize) -> Option<(Vec<u8>, u32, u32)> {
 }
 
 /// Grab display `index` without converting it (RGBA platforms).
-#[cfg(not(target_os = "macos"))]
+#[cfg(all(not(target_os = "macos"), not(windows)))]
 pub fn capture_raw(index: usize) -> Option<RawFrame> {
     let (rgba, w, h) = capture_display(index)?;
     Some(RawFrame {
@@ -290,6 +370,68 @@ pub fn capture_raw(index: usize) -> Option<RawFrame> {
         w,
         h,
         bgra: false,
+        scope: None,
+    })
+}
+
+/// Grab display `index`, honouring a monitor-local `scope`.
+///
+/// macOS ignores `scope`: `CGWindowListCreateImage` costs the same for any rect,
+/// so the whole display is grabbed and the decoder crops. Windows copies only the
+/// region, because `BitBlt` costs what it copies.
+#[cfg(not(windows))]
+pub fn capture_raw_scoped(index: usize, scope: Option<ScreenRect>) -> Option<RawFrame> {
+    let _ = scope;
+    capture_raw(index)
+}
+
+/// Grab display `index` to luma directly (no cached frame kept).
+#[cfg(windows)]
+pub fn capture_luma(index: usize) -> Option<(Vec<u8>, u32, u32)> {
+    capture_raw_scoped(index, None)?.to_luma()
+}
+
+/// Grab display `index` through GDI, copying only `scope` when it is given.
+///
+/// `scope` is monitor-local and gets clamped to the monitor; the reported
+/// [`RawFrame::scope`] is the clamped rect, so the decoder need not second-guess
+/// the frame's origin.
+#[cfg(windows)]
+pub fn capture_raw_scoped(index: usize, scope: Option<ScreenRect>) -> Option<RawFrame> {
+    if let Some(source) = std::env::var_os("RAPTORQR_FAKE_SCREEN") {
+        if index != 0 {
+            return None;
+        }
+        let (rgba, w, h) = replay_frame(std::path::Path::new(&source))?;
+        return Some(RawFrame {
+            owned: Some(rgba),
+            stride: w as usize * 4,
+            w,
+            h,
+            bgra: false,
+            scope: None,
+        });
+    }
+
+    let monitors = crate::capture_win::monitors();
+    let monitor = monitors.get(index)?;
+    let full = ScreenRect {
+        x: 0,
+        y: 0,
+        w: monitor.w,
+        h: monitor.h,
+    };
+    let wanted = scope
+        .map(|rect| rect.intersect(&full))
+        .filter(|rect| rect.w > 0 && rect.h > 0);
+    let (bgra, w, h) = crate::capture_win::capture_bgra(monitor, wanted.as_ref())?;
+    Some(RawFrame {
+        owned: Some(bgra),
+        stride: w as usize * 4,
+        w,
+        h,
+        bgra: true,
+        scope: wanted,
     })
 }
 
@@ -493,6 +635,7 @@ mod tests {
             w,
             h,
             bgra,
+            scope: None,
         }
     }
 
@@ -533,6 +676,7 @@ mod tests {
             w: 2,
             h: 2,
             bgra: false,
+            scope: None,
         };
         assert_eq!(padded.to_luma().unwrap().0, vec![0; 4]);
     }

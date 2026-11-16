@@ -1,7 +1,8 @@
 name: Windows receiver
 
-# Builds the Windows receiver (raptorqr-host.exe). The receiver is headless
-# there: gpui has no Windows backend, so `main` dispatches to src/console.rs.
+# Builds the Windows receiver (raptorqr-host.exe): the iced window version.
+# iced draws with tiny-skia on the CPU and presents through softbuffer, so the
+# job needs no GPU (gpui has no Windows backend, so Windows never uses it).
 #
 # Fixtures under host/tests/fixtures are generated, not committed, so the
 # tests that need them skip on a fresh checkout; the rest run for real.

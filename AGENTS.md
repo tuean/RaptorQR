@@ -33,7 +33,8 @@ pnpm host:install   # 2. 构建 release（universal + 签名）→ 覆盖 /Appli
 - 提交前：`host/` 改动跑 `pnpm host:test`；TS 侧改动跑 `pnpm test`。
 - **文本不落盘**：文本传输走剪贴板 + 界面显示，只有一个落盘入口
   `transfer::save_completed`（文本返回 `None`），不要绕过它直接写文件。
-  剪贴板：UI 用 gpui，无界面用 `clipboard::copy_text`（macOS 必须带 `LC_CTYPE=UTF-8`，
+  剪贴板：UI 用 gpui / iced 的原生能力（macOS `gpui`，Windows `iced::clipboard`），
+  无界面用 `clipboard::copy_text`（macOS 必须带 `LC_CTYPE=UTF-8`，
   否则 `pbcopy` 在 `C` locale 下会静默丢掉中文）。
 - 接收端看到的文件名、MIME、文本都来自发送端，属于**不可信输入**：落盘、拼路径、拼
   AppleScript 之前必须校验/转义（见 `host/src/transfer.rs` 的 `sanitize_filename`、

@@ -35,6 +35,8 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 
 # Rust host receiver
 host/target
+# Windows cross-compile output (cargo build --target x86_64-pc-windows-gnu)
+host/target-win
 # generated test fixtures (node host/scripts/encode_fixture.mjs)
 host/tests/fixtures/
 apps/web/dist-single

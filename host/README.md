@@ -1,4 +1,4 @@
-# RaptorQR Host Receiver (Rust + gpui)
+# RaptorQR Host Receiver (Rust + gpui / iced)
 
 屏幕捕获版 RaptorQR 接收端:不再用摄像头,直接从屏幕指定区域读取动画 QR
 码流,解码 RaptorQR 传输协议:文件重建到 `~/Downloads`,文本直接进剪贴板。
@@ -6,8 +6,8 @@
 配合 `apps/web` 的发送端(或单文件 HTML 发送端)使用。典型场景:虚拟机
 (隔离内网)里的文件 → 屏幕动画 QR → 宿主机捕获还原。
 
-macOS/Linux 用 gpui 窗口; **Windows 走无界面版**(gpui 没有 Windows 后端),
-见下面的「Windows 无界面接收端」。
+macOS/Linux 用 gpui 窗口;Windows 用 **iced**(纯 CPU 光栅,不需要 GPU),
+见下面的「Windows 接收端」。
 
 ## 构建与运行
 
@@ -72,22 +72,31 @@ pnpm host:install   # 构建 release(universal + 本地证书签名)→ 覆盖 /
 屏幕上那块区域没有可见的二维码(常见原因:发送端窗口被别的窗口挡住,
 macOS 会冻结被遮挡窗口的动画)。
 
-## Windows 无界面接收端
+## Windows 接收端(iced,无需 GPU)
 
-`gpui` 没有 Windows 后端,所以 Windows 上编译出的就是一个**无界面接收端**
-(`src/console.rs`,与 macOS 窗口版共用同一套捕获/扫描/解码/保存链路)。
-没有窗口,参数即交互:
+`gpui` 没有 Windows 后端,而且这台机器没有可用 GPU,所以 Windows 上是一个
+**iced 窗口**(`src/ui_win.rs`):绘制走 `tiny-skia` 纯 CPU 光栅,呈现走
+`softbuffer`(GDI blit),全程不申请任何 D3D/wgpu 适配器。抓屏也换成了 GDI
+`BitBlt`(`src/capture_win.rs`)——`xcap` 的 Windows 后端是 DXGI 桌面复制,
+没有真显卡时 `IDXGIOutputDuplication` 建不起来。
+
+双击 exe 就是窗口版:状态胶囊、进度卡、已接收列表、`框选区域` 拖拽选区域
+(选区只影响那一块屏,其余屏仍全屏扫)。窗口版之外仍然保留无界面版:
 
 ```powershell
-raptorqr-host.exe                                  # 全屏扫描所有显示器 → %USERPROFILE%\Downloads
-raptorqr-host.exe --once                           # 收到第一个传输就退出(脚本/测试用)
-raptorqr-host.exe --display 2 --region 300,200,900,700   # 只扫第 2 块屏的这块区域
+raptorqr-host.exe                                  # 窗口版(默认)
+raptorqr-host.exe --headless                       # 无界面版,参数即交互
+raptorqr-host.exe --headless --once                # 收到第一个传输就退出(脚本/测试用)
+raptorqr-host.exe --headless --display 2 --region 300,200,900,700   # 只扫第 2 块屏的这块区域
 raptorqr-host.exe --check                          # 体检:逐屏尺寸 / 亮度 / 解到几个二维码
 ```
 
+窗口版与无界面版共用同一套捕获/扫描/解码/保存链路(`src/app.rs` 是共用内核,
+`src/ui.rs` 与 `src/ui_win.rs` 只是两个外壳)。无界面版参数:
+
 | 参数 | 作用 |
 | --- | --- |
-| `--headless` | 强制无界面(macOS/Linux 上想看控制台输出时用;Windows 默认就是它) |
+| `--headless` | 强制无界面(macOS/Linux 上想看控制台输出时用) |
 | `--out DIR` | **文件**的输出目录,默认用户 `Downloads`(文本不落盘,直接进剪贴板) |
 | `--display N` | 只扫第 N 块屏(1 起,编号同 `--check`) |
 | `--region x,y,w,h` | 只扫该屏的一块区域(物理像素,屏幕左上角为原点) |
@@ -96,8 +105,16 @@ raptorqr-host.exe --check                          # 体检:逐屏尺寸 / 亮�
 - 每 `0.5 s` 刷新一行状态:进度 / 已解符号数 + 速率 / 传输包数。
 - 收到文件打印 `✓ 已接收 <文件> (<大小>) → <路径>`;发送端循环播放的同一个
   流转只会写盘一次(不堆 `file (1)`)。
-- Windows 下**没有系统通知**,反馈只有控制台输出。
+- 窗口版没有**系统通知**:收到东西时靠应用内卡片和列表,不弹 toast(见已知限制)。
 - 设了 `--region` 时只扫那一块区域(其余显示器不扫),这是缩小扫描范围的正规做法。
+- 窗口版也认 `--region` / `--display`:相当于开局就帮你框好选区,不用再点一遍
+  **框选区域**。但 `--out` / `--once` 只属于无界面版(窗口里没有对应概念),
+  命令行带了这两个参数时仍然走控制台。
+- exe 是**控制台子系统**(这样 `--check` / `--headless` 才有输出)。双击运行时
+  Windows 会给它配一个控制台窗口,程序会把它隐藏起来;从 `cmd`/PowerShell 里启动
+  (控制台和 shell 共用)时则不会隐藏,免得把你的终端一起藏了。
+- GDI 抓屏**不需要屏幕录制权限**;但锁屏、独占全屏的游戏、DRM 视频会抓到全黑,
+  页脚会明确提示这一点。
 
 构建:
 
@@ -105,6 +122,17 @@ raptorqr-host.exe --check                          # 体检:逐屏尺寸 / 亮�
 cargo build --manifest-path host\Cargo.toml --release
 # → host\target\release\raptorqr-host.exe
 ```
+
+在 macOS 上交叉编译(需要 `mingw-w64`,Homebrew 的 `x86_64-w64-mingw32-gcc` 即可,
+不需要 MSVC):
+
+```bash
+git clone https://github.com/tuean/RaptorQR && cd RaptorQR
+cargo build --manifest-path host/Cargo.toml --release --target x86_64-pc-windows-gnu
+# → host/target/x86_64-pc-windows-gnu/release/raptorqr-host.exe
+```
+
+这是一份 **GNU(mingw)目标**的 exe:不依赖 MSVC 运行库,拖到 Windows 上双击即可。
 
 不想自己编译:**[Releases](https://github.com/tuean/RaptorQR/releases/latest) 里的
 `RaptorQR-Receiver-windows-x64.zip` 就是同一个 exe**(附带中文 `使用说明.txt`)。
@@ -233,7 +261,8 @@ cargo test --test singlefile_e2e
   `runtime_shaders` feature(shader 改为运行时编译),这样只装 CLT 也能 `cargo run`。
 - 首次运行需要在 系统设置 → 隐私与安全性 → 屏幕录制 里授权,否则捕获全黑。
 - gpui 只作为 **非 Windows** 依赖(`[target.'cfg(not(windows))'.dependencies]`);
-  Windows 构建不需要它,也不需要 Metal/图形栈。
+  Windows 构建不需要它,也不需要 Metal/图形栈。Windows 侧的 iced 必须
+  `default-features = false`(否则会编进 wgpu,无 GPU 机器上窗口全黑)。
 - 检查 Windows 目标能否编译(在 mac 上即可,无需链接器):
   `cargo check --target x86_64-pc-windows-msvc`。
 
@@ -241,6 +270,13 @@ cargo test --test singlefile_e2e
 
 - 坐标按物理像素;Retina 屏下若发送端按逻辑像素渲染,区域会偏小,可在预览上重新框选。
 - `xcap` 走 macOS 旧版 `CGWindowListCreateImage` API;未来可换 ScreenCaptureKit。
-- Windows 端无 GUI:区域只能用 `--region` 指定,不能拖拽框选;也没有完成通知。
-- Windows 端尚未在真机上验证过屏幕捕获(`xcap` 在 Windows 走 WGC/DXGI),
-  请先用 `raptorqr-host.exe --check` 确认能抓到画面且亮度正常。
+- Windows 端有窗口了(iced + tiny-skia + softbuffer),但**没有系统通知**:收到
+  文件/文本只有应用内卡片与列表,不弹 toast(iced 的 `window::latest()` 是
+  「返回 Id 的消息」,与本应用的 `Message` 枚举不同型,留到后面再做)。也没有
+  应用图标与安装包(NSIS),目前就是单个 exe。
+- Windows 端抓屏走 GDI `BitBlt`:锁屏、独占全屏的游戏、DRM 视频会抓到全黑;
+  抓屏范围是「选区」所以成本随面积线性,选区越大越费 CPU。
+- Windows 端尚未在真机上验证过(`pnpm host:test` 只覆盖 macOS 侧;Windows 侧
+  目前靠 `cargo check --target x86_64-pc-windows-msvc` + 交叉编译保证能编过)。
+  第一次上机请先 `raptorqr-host.exe --check` 确认逐屏尺寸/亮度正常。
+- 设计取舍与未做项见 [docs/windows-no-gpu-ui.md](../docs/windows-no-gpu-ui.md)。

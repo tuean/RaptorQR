@@ -1,12 +1,19 @@
 //! RaptorQR receiver entry point.
 //!
-//! macOS/Linux: gpui window (pass `--headless` for the console receiver).
-//! Windows: always the console receiver — gpui has no Windows backend.
+//! All platforms: a window (pass `--headless` for the console receiver).
+//! macOS/Linux use gpui; Windows uses iced with the CPU rasterizer, because gpui
+//! has no Windows backend and the Windows receiver may have no usable GPU.
 
 #[cfg(not(windows))]
 use gpui::*;
 
 fn main() {
+    // DPI awareness has to be set before any window (or the first capture)
+    // exists: otherwise GDI reports and grabs the desktop scaled to 96 DPI and
+    // every region is off by the scale factor.
+    #[cfg(windows)]
+    raptorqr_host::capture_win::dpi_aware();
+
     let has = |flag: &str| std::env::args().any(|a| a == flag);
 
     // `--check` diagnoses the capture path (screen-recording permission, QR
@@ -29,9 +36,28 @@ fn main() {
         return;
     }
 
-    // Windows has no gpui backend, so it always runs headless.
-    if cfg!(windows) || has("--headless") {
+    if has("--headless") {
         raptorqr_host::console::run();
+        return;
+    }
+
+    // Windows: iced on the software renderer. If the window cannot be created
+    // at all (broken display driver, no interactive session), fall back to the
+    // console receiver instead of dying with a message nobody sees.
+    #[cfg(windows)]
+    {
+        // `--once` and `--out` only exist to make a run scriptable, and the
+        // window has no equivalent; keeping them on the console path is what
+        // makes "same command, same behaviour" hold after the GUI arrived.
+        if has("--once") || has("--out") {
+            raptorqr_host::console::run();
+            return;
+        }
+        if let Err(error) = raptorqr_host::ui_win::run() {
+            eprintln!("receiver window failed to start: {error}");
+            eprintln!("falling back to the console receiver (--headless)");
+            raptorqr_host::console::run();
+        }
         return;
     }
 
